@@ -1,0 +1,117 @@
+{
+  "company_name": "Reliance Industries Limited",
+  "cin": "L17110MH1973PLC019786",
+  "incorporation_date": "1973-05-08",
+  "registered_office": "Makers Chambers IV, 3rd Floor, 222, Nariman Point, Mumbai, Maharashtra 400021",
+  "industry": "Diversified Conglomerate",
+  "nic_code": "06101",
+  "promoters": [
+    {"name": "Mukesh Dhirubhai Ambani", "din": "00001695", "designation": "Chairman & Managing Director", "shareholding_pct": 50.39}
+  ],
+  "loan_request": {
+    "type": "Term Loan",
+    "amount_cr": 1500.0,
+    "purpose": "Decarbonization Initiative - New Energy Hydrogen Giga Factory",
+    "tenor_years": 7,
+    "proposed_rate_pct": 8.75
+  },
+  "financials": {
+    "fy_2024": {
+      "revenue_cr": 1000122.0,
+      "ebitda_cr": 178677.0,
+      "ebitda_margin_pct": 17.86,
+      "pat_cr": 79020.0,
+      "total_debt_cr": 324622.0,
+      "net_worth_cr": 742922.0,
+      "total_assets_cr": 1812320.0,
+      "current_ratio": 1.15,
+      "dscr": 2.45,
+      "icr": 6.8,
+      "de_ratio": 0.44,
+      "tangible_net_worth_cr": 712000.0,
+      "promoter_equity_pct": 50.39,
+      "operating_cash_flow_cr": 145000.0
+    },
+    "fy_2023": {
+      "revenue_cr": 892902.0,
+      "ebitda_cr": 153920.0,
+      "ebitda_margin_pct": 17.24,
+      "pat_cr": 73670.0,
+      "total_debt_cr": 314000.0,
+      "net_worth_cr": 715000.0,
+      "total_assets_cr": 1650000.0,
+      "current_ratio": 1.10,
+      "dscr": 2.10,
+      "icr": 5.9,
+      "de_ratio": 0.46,
+      "tangible_net_worth_cr": 685000.0,
+      "promoter_equity_pct": 50.39,
+      "operating_cash_flow_cr": 132000.0
+    }
+  },
+  "gst_data": {
+    "gstin": "27AAACR5055K1Z5",
+    "gstr_3b_turnover_cr": 985400.0,
+    "gstr_2a_purchases_cr": 645200.0,
+    "bank_credit_entries_cr": 1005000.0,
+    "filed_months": 36,
+    "total_months": 36,
+    "compliance_score": 99.5,
+    "mismatches": [
+      {"month": "2024-03", "gstr3b_cr": 85000.0, "bank_cr": 86200.0, "variance_pct": 1.4, "flag": "standard"}
+    ]
+  },
+  "mca_data": {
+    "annual_returns_filed": true,
+    "last_agm_date": "2024-08-28",
+    "charges_registered": 142,
+    "charges_satisfied": 138,
+    "charges_open": 4,
+    "charges_detail": [
+      {"charge_holder": "State Bank of India", "amount_cr": 5000.0, "status": "Open", "date": "2022-06-15"},
+      {"charge_holder": "HDFC Bank", "amount_cr": 3500.0, "status": "Satisfied", "date": "2021-03-20"},
+      {"charge_holder": "ICICI Bank", "amount_cr": 2200.0, "status": "Open", "date": "2023-11-10"}
+    ],
+    "roc_notices": 0,
+    "director_disqualifications": 0,
+    "compliance_score": 98
+  },
+  "news_data": {
+    "overall_sentiment": 0.75,
+    "sentiment_label": "Positive",
+    "summary": "Reliance Industries reports record revenue and EBITDA for FY24. Strategic focus on Green Energy and Retail expansion remains a major growth driver.",
+    "articles": [
+      {"title": "Reliance Industries share price: RIL stock hits all-time high on growth outlook", "sentiment": "positive", "sentiment_score": 0.9, "source": "https://economictimes.indiatimes.com/markets/stocks/news/reliance-industries-share-price-ril-stock-hits-all-time-high-on-growth-outlook/articleshow/107238466.cms"},
+      {"title": "Reliance to invest $10 billion in green energy complex in Gujarat", "sentiment": "positive", "sentiment_score": 0.8, "source": "https://www.livemint.com/companies/news/reliance-to-invest-10-billion-in-green-energy-complex-in-gujarat-11704875649420.html"},
+      {"title": "Reliance Industries Ltd (RELI.NS) Company Profile", "sentiment": "neutral", "sentiment_score": 0.1, "source": "https://www.reuters.com/markets/companies/RELI.NS/"}
+    ]
+  },
+  "litigation_data": {
+    "total_cases": 12,
+    "pending_cases": 3,
+    "disposed_cases": 9,
+    "litigation_risk_score": 15,
+    "cases": [
+      {"case_id": "COM/102/2023", "type": "Consumer", "status": "Pending", "amount_cr": 0.15, "court": "NCDRC"},
+      {"case_id": "TAX/405/2022", "type": "Tax", "status": "Disposed", "amount_cr": 45.0, "court": "ITAT"},
+      {"case_id": "CIV/99/2021", "type": "Civil", "status": "Disposed", "amount_cr": 1.2, "court": "Bombay High Court"}
+    ]
+  },
+  "sector_data": {
+    "industry": "Diversified Conglomerate",
+    "outlook": "Positive",
+    "outlook_score": 85,
+    "regulatory_risk": "Low",
+    "regulatory_risk_score": 20,
+    "key_factors": [
+      "Government push for Green Hydrogen",
+      "Rising consumer spends in Retail",
+      "Global crude oil price volatility",
+      "Increasing 5G adoption in Telecom"
+    ],
+    "rbi_circulars": [
+      "RBI Master Circular on ECB guidelines 2024",
+      "Revised MSME classification 2023"
+    ]
+  }
+}

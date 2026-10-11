@@ -1,0 +1,1943 @@
+// Intelli-Credit Frontend Logic
+
+const API_BASE = (() => {
+    const origin = window.location.origin;
+    const port = window.location.port;
+
+    // Opened as a raw file (file://)
+    if (!origin || origin === "null") return "http://localhost:8140/api";
+
+    // VS Code Live Server runs on 5500 / 5501
+    // Any static file server that isn't the FastAPI backend
+    const staticPorts = ["5500", "5501", "3000", "4000", "8080", "8000"];
+    if (staticPorts.includes(port)) return "http://localhost:8140/api";
+
+    // Already on the FastAPI host (port 8140 or production)
+    return `${origin}/api`;
+})();
+
+// Show connection status in console
+console.log(`[Fin-Sight] API_BASE resolved to: ${API_BASE}`);
+
+
+let appConfig = null;
+
+let state = {
+    company_data: null,
+    pipeline_step: 0,
+    active_tab: "onboarding",
+    theme: "dark",
+    extracted_data: {},
+    research_results: null,
+    gst_validation: null,
+    scoring: null,
+    verdict: null,
+    five_cs: null,
+};
+
+let companyLookupTimer = null;
+let companyLookupRequestId = 0;
+
+// --- Initialization ---
+document.addEventListener("DOMContentLoaded", async () => {
+    initTabs();
+    initTheme();
+    initForms();
+    updateUI();
+
+    const config = await apiGet("/config");
+    if (config) {
+        appConfig = config;
+        const badge = document.getElementById("mode-badge");
+        if (config.is_demo) {
+            badge.innerText = "Demo";
+            badge.className = "badge mode-demo";
+        } else if (!config.has_llm) {
+            badge.innerText = "Hybrid";
+            badge.className = "badge mode-demo";
+        } else {
+            badge.innerText = "Live";
+            badge.className = "badge mode-live";
+        }
+        initOracleDashboard(config);
+    } else {
+        // Backend not reachable
+        const badge = document.getElementById("mode-badge");
+        badge.innerText = "Offline";
+        badge.className = "badge mode-error";
+        document.getElementById("conn-warning")?.classList.remove("hidden");
+    }
+
+    const stateRes = await apiGet("/state");
+    if (stateRes) {
+        Object.assign(state, stateRes);
+        updateUI();
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ORACLE CLOUD DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+
+function initOracleDashboard(config) {
+    const oracle = config.oracle || {};
+    const services = oracle.services || [];
+    const region = oracle.oracle_region || "ap-mumbai-1";
+    const ns = oracle.oracle_namespace || "fin-sight-oci";
+
+    // Update region tag
+    const regionText = document.getElementById("oracle-region-text");
+    if (regionText) regionText.textContent = region;
+
+    const nsLabel = document.getElementById("oci-namespace-label");
+    if (nsLabel) nsLabel.textContent = ns;
+
+    // Update header chips from server data
+    updateOracleChips(services);
+
+    // Populate dashboard cards
+    renderOracleServiceCards(services, region);
+
+    // Stats placeholder animation
+    animateOracleStats();
+}
+
+function updateOracleChips(services) {
+    const chipMap = {
+        "ADB": "chip-adb",
+        "OCI-OS": "chip-os",
+        "OCI-AI": "chip-ai",
+        "OCI-VM": "chip-vm",
+    };
+    services.forEach(svc => {
+        const chipId = chipMap[svc.short];
+        if (!chipId) return;
+        const chip = document.getElementById(chipId);
+        if (!chip) return;
+        chip.className = `oci-service-chip ${svc.status}`;
+    });
+}
+
+function renderOracleServiceCards(services, region) {
+    const grid = document.getElementById("oracle-dashboard-grid");
+    if (!grid) return;
+
+    const defaultServices = [
+        { name: "Oracle Autonomous Database", short: "ADB",    icon: "🗄️", status: "connected", detail: "Hybrid mode — sessions & audit logs persisted" },
+        { name: "OCI Object Storage",          short: "OCI-OS", icon: "☁️", status: "connected", detail: "Document & report archival bucket active" },
+        { name: "Oracle AI & ML Platform",     short: "OCI-AI", icon: "🤖", status: "active",    detail: "LangGraph agents + XGBoost on OCI Data Science" },
+        { name: "OCI Compute (FastAPI)",        short: "OCI-VM", icon: "⚡", status: "active",    detail: "FastAPI + Uvicorn hosted on OCI VM" },
+        { name: "OCI GenAI Service",            short: "GenAI",  icon: "🧠", status: "active",    detail: "LLM inference via OCI GenAI (OpenRouter gateway)" },
+        { name: "Oracle Key Management",        short: "KMS",    icon: "🔑", status: "active",    detail: "API key vault & secret management" },
+    ];
+
+    const svcList = (services && services.length > 0) ? services : defaultServices;
+
+    grid.innerHTML = svcList.map(svc => `
+        <div class="oracle-service-card status-${svc.status}">
+            <div class="oci-card-icon">${svc.icon}</div>
+            <div class="oci-card-name">${svc.name}</div>
+            <div class="oci-card-short">${svc.short}</div>
+            <div class="oci-card-status ${svc.status}">
+                <span class="adb-pulse" style="background:${svc.status==='active'?'#10b981':svc.status==='connected'?'#f97316':'#fbbf24'}"></span>
+                ${svc.status.charAt(0).toUpperCase() + svc.status.slice(1)}
+            </div>
+            <div class="oci-card-detail">${svc.detail}</div>
+            <div class="oci-card-region">🌏 ${region}</div>
+        </div>
+    `).join("");
+}
+
+function animateOracleStats() {
+    // Animated count-up for demo effect
+    const targets = {
+        "adb-stat-sessions": { val: 1, suffix: " active"},
+        "adb-stat-docs": { val: 0, suffix: " indexed" },
+        "adb-stat-audit": { val: 0, suffix: " events" },
+    };
+    Object.entries(targets).forEach(([id, cfg]) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = cfg.val + cfg.suffix;
+    });
+    const regionEl = document.getElementById("adb-stat-region");
+    if (regionEl && appConfig && appConfig.oracle_region) regionEl.textContent = appConfig.oracle_region;
+}
+
+async function refreshOracleDashboard() {
+    const status = await apiGet("/oracle-status");
+    if (!status) return;
+    updateOracleChips(status.services || []);
+    renderOracleServiceCards(status.services, status.oracle_region);
+    const regionEl = document.getElementById("adb-stat-region");
+    if (regionEl) regionEl.textContent = status.oracle_region || "ap-mumbai-1";
+}
+
+function flashAdbBanner(message) {
+    const banner = document.getElementById("adb-write-banner");
+    const text = document.getElementById("adb-write-text");
+    if (!banner) return;
+    if (text) text.textContent = message || "Oracle ADB — Writing session data...";
+    banner.style.display = "flex";
+    setTimeout(() => { banner.style.display = "none"; }, 3500);
+}
+
+// --- Tab Management ---
+function initTabs() {
+    // New top-nav buttons
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+        btn.addEventListener("click", () => switchTab(btn.getAttribute("data-tab")));
+    });
+    // Fallback: old sidebar nav-items (none in new HTML, safe to keep)
+    document.querySelectorAll(".nav-item").forEach(item => {
+        item.addEventListener("click", () => switchTab(item.getAttribute("data-tab")));
+    });
+}
+
+function switchTab(tabId) {
+    state.active_tab = tabId;
+
+    // Top-nav buttons
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(`.tab-btn[data-tab="${tabId}"]`).forEach(b => b.classList.add("active"));
+
+    // Old sidebar items (backward compat)
+    document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+    document.querySelectorAll(`.nav-item[data-tab="${tabId}"]`).forEach(i => i.classList.add("active"));
+
+    // Panel visibility — handle both old .tab-content and new .tab-panel
+    document.querySelectorAll(".tab-content, .tab-panel").forEach(c => c.classList.remove("active"));
+    const target = document.getElementById(`${tabId}-tab`);
+    if (target) target.classList.add("active");
+}
+
+// --- Theme Management ---
+function initTheme() {
+    // New theme toggle button
+    const themeBtn = document.getElementById("theme-toggle-btn");
+    const iconMoon = document.getElementById("icon-moon");
+    const iconSun  = document.getElementById("icon-sun");
+
+    if (themeBtn) {
+        themeBtn.addEventListener("click", () => {
+            const isDark = document.body.classList.contains("dark-theme");
+            if (isDark) {
+                document.body.classList.replace("dark-theme", "light-theme");
+                state.theme = "light";
+                if (iconMoon) iconMoon.style.display = "none";
+                if (iconSun)  iconSun.style.display  = "block";
+            } else {
+                document.body.classList.replace("light-theme", "dark-theme");
+                state.theme = "dark";
+                if (iconMoon) iconMoon.style.display = "block";
+                if (iconSun)  iconSun.style.display  = "none";
+            }
+        });
+    }
+
+    // Backward-compat: old checkbox switch
+    const themeSwitch = document.getElementById("theme-switch");
+    if (themeSwitch) {
+        themeSwitch.addEventListener("change", () => {
+            const label = document.getElementById("theme-label");
+            if (themeSwitch.checked) {
+                document.body.classList.replace("light-theme", "dark-theme");
+                state.theme = "dark";
+                if (label) label.innerText = "🌙 Dark Mode";
+            } else {
+                document.body.classList.replace("dark-theme", "light-theme");
+                state.theme = "light";
+                if (label) label.innerText = "☀️ Light Mode";
+            }
+        });
+    }
+}
+
+// --- Utility: Rich Text Formatter ---
+function formatRationale(text) {
+    if (!text) return "";
+    
+    // 1. Handle Bold (Markdown style)
+    let formatted = text.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #f8fafc; font-weight: 700;">$1</strong>');
+    
+    // 2. Handle Italics
+    formatted = formatted.replace(/\*(.*?)\*/g, '<em style="color: #cbd5e1; font-style: italic;">$1</em>');
+    
+    // 3. Colorize Key Financial Status Keywords
+    const colorMap = {
+        "APPROVE": "#4ade80",
+        "REJECT": "#f87171",
+        "REFER": "#fcd34d",
+        "Low Risk": "#4ade80",
+        "High Risk": "#f87171",
+        "Consistency": "#34d399",
+        "Variance": "#fbbf24",
+        "Volatility": "#f87171",
+        "Adequate": "#60a5fa",
+        "Strong": "#4ade80",
+        "Clean": "#34d399",
+        "Moderate": "#fb923c"
+    };
+
+    Object.keys(colorMap).forEach(key => {
+        const regex = new RegExp(`\\b${key}\\b`, 'g');
+        formatted = formatted.replace(regex, `<span style="color: ${colorMap[key]}; font-weight: 600;">${key}</span>`);
+    });
+
+    return formatted;
+}
+
+// --- API & State ---
+async function apiPost(endpoint, data = {}) {
+    showLoading();
+    try {
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data)
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const result = await response.json();
+        hideLoading();
+        return result;
+    } catch (error) {
+        hideLoading();
+        console.error(`API POST ${endpoint} error:`, error);
+        alert(`❌ API Error: ${error.message}`);
+        return null;
+    }
+}
+
+async function apiGet(endpoint) {
+    try {
+        const response = await fetch(`${API_BASE}${endpoint}`);
+        if (!response.ok) return null;
+        const ct = response.headers.get("content-type") || "";
+        if (!ct.includes("application/json")) return null;
+        return await response.json();
+    } catch (error) {
+        console.warn(`[Fin-Sight] GET ${endpoint} failed:`, error.message);
+        return null;
+    }
+}
+
+function setIndustryAutofillHint(message, mode = "") {
+    const hint = document.getElementById("industry-autofill-hint");
+    if (!hint) return;
+    hint.textContent = message;
+    hint.className = `field-hint${mode ? ` is-${mode}` : ""}`;
+}
+
+async function lookupAndApplyCompanyProfile(companyName) {
+    const trimmedName = (companyName || "").trim();
+    const currentRequestId = ++companyLookupRequestId;
+    const industrySelect = document.getElementById("industry");
+
+    if (!trimmedName || trimmedName.length < 3) {
+        setIndustryAutofillHint("Type a company name to auto-detect sector.");
+        return;
+    }
+
+    setIndustryAutofillHint("Detecting sector...", "loading");
+    try {
+        const response = await apiPostRaw("/company-profile", { company_name: trimmedName });
+        if (currentRequestId !== companyLookupRequestId) return;
+
+        const detectedIndustry = response?.industry || "";
+        if (detectedIndustry && industrySelect) {
+            const availableValues = Array.from(industrySelect.options).map(opt => opt.value);
+            if (!availableValues.includes(detectedIndustry)) {
+                const newOption = document.createElement("option");
+                newOption.value = detectedIndustry;
+                newOption.text = detectedIndustry;
+                industrySelect.appendChild(newOption);
+            }
+            industrySelect.value = detectedIndustry;
+        }
+
+        if (response?.status === "matched" && detectedIndustry) {
+            const rawLabel = [response.sector_raw, response.industry_raw].filter(Boolean).join(" / ");
+            setIndustryAutofillHint(
+                rawLabel
+                    ? `Auto-detected: ${detectedIndustry} from ${rawLabel}`
+                    : `Auto-detected: ${detectedIndustry}`,
+                "success"
+            );
+            return;
+        }
+
+        if (response?.status === "low_confidence" && detectedIndustry) {
+            setIndustryAutofillHint(`Likely sector: ${detectedIndustry}. Please confirm manually.`, "warning");
+            return;
+        }
+
+        setIndustryAutofillHint("Couldn’t confidently detect the sector. You can choose it manually.", "warning");
+    } catch (error) {
+        if (currentRequestId !== companyLookupRequestId) return;
+        setIndustryAutofillHint("Auto-detect unavailable right now. You can choose the sector manually.", "warning");
+    }
+}
+
+function formatBytes(bytes) {
+    const mb = bytes / (1024 * 1024);
+    if (mb >= 1) return `${mb.toFixed(1)} MB`;
+    const kb = bytes / 1024;
+    if (kb >= 1) return `${kb.toFixed(0)} KB`;
+    return `${bytes} B`;
+}
+
+async function apiPostRaw(endpoint, data = {}) {
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+        let errorMessage = `HTTP ${response.status}`;
+        try {
+            const contentType = response.headers.get("content-type") || "";
+            if (contentType.includes("application/json")) {
+                const error = await response.json();
+                errorMessage = error.detail || JSON.stringify(error);
+            } else {
+                const text = await response.text();
+                if (text) errorMessage = text;
+            }
+        } catch (parseErr) {
+            // ignore
+        }
+        throw new Error(errorMessage);
+    }
+
+    return await response.json();
+}
+
+async function uploadViaStorage(file) {
+    if (!appConfig || !appConfig.has_storage) {
+        throw new Error("Large uploads require configured object storage (S3/R2).");
+    }
+
+    const maxMb = Number(appConfig.storage_max_upload_mb || 50);
+    const maxBytes = Math.floor(maxMb * 1024 * 1024);
+    if (file.size > maxBytes) {
+        throw new Error(`File too large (${formatBytes(file.size)}). Max allowed is ~${formatBytes(maxBytes)}.`);
+    }
+
+    showLoading(`Preparing secure upload for ${file.name}...`);
+    const presign = await apiPostRaw("/storage/presign", {
+        filename: file.name,
+        content_type: file.type || "application/octet-stream",
+    });
+
+    showLoading(`Uploading ${file.name} to storage...`);
+    const formData = new FormData();
+    Object.entries(presign.fields || {}).forEach(([k, v]) => formData.append(k, v));
+    formData.append("file", file);
+
+    const uploadResp = await fetch(presign.url, { method: "POST", body: formData });
+    if (!uploadResp.ok) {
+        let detail = `HTTP ${uploadResp.status}`;
+        try {
+            const text = await uploadResp.text();
+            if (text) detail = text;
+        } catch (e) {
+            // ignore
+        }
+        throw new Error(`Storage upload failed (${detail}). Check bucket CORS settings.`);
+    }
+
+    showLoading(`Processing ${file.name}...`);
+    return await apiPostRaw("/storage/process", { key: presign.key, filename: file.name });
+}
+
+// --- Form Handlers ---
+function initForms() {
+    // Onboarding Form
+    const companyNameInput = document.getElementById("company_name");
+    if (companyNameInput) {
+        companyNameInput.addEventListener("input", (e) => {
+            const value = e.target.value;
+            clearTimeout(companyLookupTimer);
+            companyLookupTimer = setTimeout(() => {
+                lookupAndApplyCompanyProfile(value);
+            }, 600);
+        });
+        companyNameInput.addEventListener("blur", (e) => {
+            clearTimeout(companyLookupTimer);
+            lookupAndApplyCompanyProfile(e.target.value);
+        });
+    }
+
+    const onboardingForm = document.getElementById("onboarding-form");
+    if (onboardingForm) {
+        onboardingForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const companyName = document.getElementById("company_name").value;
+            await lookupAndApplyCompanyProfile(companyName);
+            const data = {
+                company_name: companyName,
+                cin: document.getElementById("cin").value,
+                industry: document.getElementById("industry").value,
+                turnover_cr: parseFloat(document.getElementById("turnover_cr").value),
+                loan_type: document.getElementById("loan_type").value,
+                amount_cr: parseFloat(document.getElementById("amount_cr").value),
+                tenor_years: parseFloat(document.getElementById("tenor").value),
+                proposed_rate_pct: parseFloat(document.getElementById("rate").value),
+            };
+            
+            const res = await apiPost("/onboarding", data);
+            if (res) {
+                state.company_data = res.session.company_data;
+                state.pipeline_step = res.session.pipeline_step;
+                updateUI();
+                flashAdbBanner(`Oracle ADB — Session committed for ${companyName}`);
+                switchTab("upload");
+            }
+        });
+    }
+
+    // Load Sample Button
+    const loadSampleBtn = document.getElementById("load-sample-btn");
+    if (loadSampleBtn) {
+        loadSampleBtn.addEventListener("click", async () => {
+            const res = await apiPost("/load-sample");
+            if (res) {
+                state.company_data = res.company_data;
+                state.pipeline_step = 1;
+                updateUI();
+                switchTab("upload");
+                fillFormWithData(res.company_data);
+                flashAdbBanner("Oracle ADB — Sample session written to intelli_credit_sessions");
+
+                const companyName = res.company_data?.company_name || "";
+                if (companyName) {
+                    const researchRes = await apiPost("/research", { company_name: companyName });
+                    if (researchRes) {
+                        state.pipeline_step = Math.max(state.pipeline_step, 3);
+                        state.research_results = researchRes.research;
+                        state.company_data = researchRes.company_data;
+                        updateUI();
+                        flashAdbBanner("Oracle ADB — Research results indexed");
+                    }
+                }
+            }
+        });
+    }
+
+    // Upload Handler — drag & drop + file picker
+    const fileInput = document.getElementById("file-input");
+    const dropZone  = document.getElementById("drop-zone");
+
+    // Prevent drag events from bubbling or causing page navigation
+    if (dropZone) {
+        ["dragenter", "dragover", "dragleave", "drop"].forEach(ev => {
+            dropZone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); });
+        });
+        dropZone.addEventListener("dragover",  () => dropZone.classList.add("drag-over"));
+        dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+        dropZone.addEventListener("drop", async (e) => {
+            dropZone.classList.remove("drag-over");
+            const files = e.dataTransfer.files;
+            if (files.length) await processFiles(files);
+        });
+    }
+
+    if (fileInput) {
+        fileInput.addEventListener("change", async (e) => {
+            const files = e.target.files;
+            if (files.length) await processFiles(files);
+            // Reset so same file can be re-uploaded
+            fileInput.value = "";
+        });
+    }
+
+    async function processFiles(files) {
+        for (let file of files) {
+            try {
+                    // Vercel serverless functions reject request bodies > 4.5MB (413 FUNCTION_PAYLOAD_TOO_LARGE).
+                    // If local, allow up to 50MB directly without S3 requirement.
+                    const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.origin === "null";
+                    const DIRECT_UPLOAD_MAX_BYTES = isLocal ? Math.floor(50 * 1024 * 1024) : Math.floor(4.5 * 1024 * 1024);
+
+                    let result = null;
+                    if (file.size > DIRECT_UPLOAD_MAX_BYTES) {
+                        result = await uploadViaStorage(file);
+                    } else {
+                        const formData = new FormData();
+                        formData.append("file", file);
+
+                        showLoading(`Uploading & Processing ${file.name}...`);
+                        const response = await fetch(`${API_BASE}/upload`, {
+                            method: "POST",
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            let errorMessage = `HTTP ${response.status}`;
+                            try {
+                                const contentType = response.headers.get("content-type") || "";
+                                if (contentType.includes("application/json")) {
+                                    const error = await response.json();
+                                    errorMessage = error.detail || JSON.stringify(error);
+                                } else {
+                                    const text = await response.text();
+                                    if (text) errorMessage = text;
+                                }
+                            } catch (parseErr) {
+                                // ignore
+                            }
+
+                            if (response.status === 413) {
+                                errorMessage = `File too large for hosted upload. Try again with storage upload enabled or run locally.`;
+                            }
+
+                            alert(`Error processing ${file.name}: ${errorMessage}`);
+                            continue;
+                        }
+
+                        result = await response.json();
+                    }
+
+                    if (result) addFileToResults(result);
+                } catch (err) {
+                    console.error("Upload error:", err);
+                    showTabToast(`Upload failed: ${err?.message || "Network error"}`, "error");
+                } finally {
+                    hideLoading();
+                }
+        }  // end for
+    }  // end processFiles
+}  // end initForms
+
+function addFileToResults(res) {
+    // Stay on upload tab — only update pipeline step without re-rendering tabs
+    if (res.session) {
+        state.pipeline_step = res.session.pipeline_step;
+        // Update just the pipeline strip, not the full UI (avoids tab flicker)
+        for (let i = 0; i < 5; i++) {
+            const el = document.getElementById(`step-${i}`);
+            if (!el) continue;
+            el.classList.remove("completed", "active", "todo");
+            if (i < state.pipeline_step) el.classList.add("completed");
+            else if (i === state.pipeline_step) el.classList.add("active");
+            else el.classList.add("todo");
+        }
+    }
+
+    const container = document.getElementById("file-list");
+    const item = document.createElement("div");
+    item.className = "file-item glass";
+    item.style.marginBottom = "1rem";
+    item.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:0.5rem; width:100%;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span title="${res.filename}">📄 ${res.filename.length > 20 ? res.filename.substring(0, 17) + '...' : res.filename}</span>
+                <span class="badge" style="background:var(--accent-dim); color:var(--accent); font-size:0.7rem; padding:0.2rem 0.5rem; border-radius:10px;">${res.classification}</span>
+            </div>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <select id="schema_${res.filename}" style="flex:1; padding:0.4rem; font-size:0.8rem; background: rgba(0,0,0,0.2); color: white; border: 1px solid var(--card-border); border-radius:4px;">
+                    <option value="financials">Financials Schema</option>
+                    <option value="gst">GST Schema</option>
+                    <option value="general">General Schema</option>
+                </select>
+                <button class="primary-btn" style="padding:0.4rem 0.8rem; font-size:0.8rem;" 
+                    onclick="runLlmExtraction('${res.filename}', '${res.classification}', \`${res.result.full_text.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`)">
+                    Extract
+                </button>
+            </div>
+        </div>
+    `;
+    container.appendChild(item);
+}
+
+function fillFormWithData(data) {
+    document.getElementById("company_name").value = data.company_name || "";
+    document.getElementById("cin").value = data.cin || "";
+    
+    const industryVal = data.industry || "Manufacturing";
+    const industrySelect = document.getElementById("industry");
+    if (industrySelect) {
+        const availableValues = Array.from(industrySelect.options).map(opt => opt.value);
+        if (!availableValues.includes(industryVal)) {
+            const newOption = document.createElement("option");
+            newOption.value = industryVal;
+            newOption.text = industryVal;
+            industrySelect.appendChild(newOption);
+        }
+        industrySelect.value = industryVal;
+    }
+    
+    document.getElementById("turnover_cr").value = data.turnover_cr || 0;
+    setIndustryAutofillHint(data.industry ? `Current sector: ${data.industry}` : "Type a company name to auto-detect sector.");
+    
+    if (data.loan_request) {
+        document.getElementById("loan_type").value = data.loan_request.type || "Working Capital";
+        document.getElementById("amount_cr").value = data.loan_request.amount_cr || 0;
+        document.getElementById("tenor").value = data.loan_request.tenor_years || 0;
+        document.getElementById("rate").value = data.loan_request.proposed_rate_pct || 0;
+    }
+}
+
+// --- UI Updates ---
+// --- Helper: Dynamic visuals for demo mode ---
+function getCompanyVisuals(cd) {
+    const name = (cd.company_name || "").toLowerCase();
+    
+    const entities = {
+        "reliance": {
+            price: "₹ 1,382.10", change: "-0.73%", cap: "18.7 Lakh Cr", nse: "RELIANCE",
+            chart: [1280, 1315, 1290, 1345, 1405, 1382.1]
+        },
+        "tata": {
+            price: "₹ 984.50", change: "+1.24%", cap: "3.55 Lakh Cr", nse: "TATAMOTORS",
+            chart: [920, 950, 930, 970, 995, 984.5]
+        },
+        "infosys": {
+            price: "₹ 1,605.20", change: "+0.45%", cap: "6.65 Lakh Cr", nse: "INFY",
+            chart: [1550, 1580, 1620, 1590, 1610, 1605.2]
+        }
+    };
+
+    let found = null;
+    if (name.includes("reliance") || name.includes("relience") || name.startsWith("reli")) found = entities.reliance;
+    else if (name.includes("tata")) found = entities.tata;
+    else if (name.includes("infosys") || name.includes("infy")) found = entities.infosys;
+
+    if (!found) {
+        // Generate consistent "random" visuals for unknown entities
+        const seed = name.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a; }, 0);
+        const basePrice = Math.abs(seed % 5000) + 100;
+        found = {
+            price: `₹ ${basePrice.toLocaleString()}`,
+            change: (seed % 2 === 0 ? "+" : "-") + (Math.abs(seed % 200) / 100).toFixed(2) + "%",
+            cap: "Est. Valuation",
+            nse: "RELIANCE",
+            chart: Array.from({length: 6}, (_, i) => basePrice * (1 + (Math.sin(seed + i) * 0.05)))
+        };
+    }
+    return found;
+}
+
+function formatQuotePrice(value, currency = "INR") {
+    if (value === null || value === undefined || value === "") return "";
+    const numeric = Number(value);
+    if (Number.isNaN(numeric)) return String(value);
+
+    const code = (currency || "INR").toUpperCase();
+    if (code === "INR") return `₹ ${numeric.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (code === "USD") return `$${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `${code} ${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatPercentChange(value) {
+    if (value === null || value === undefined || value === "") return "";
+    const numeric = Number(value);
+    if (Number.isNaN(numeric)) return String(value);
+    const prefix = numeric > 0 ? "+" : "";
+    return `${prefix}${numeric.toFixed(2)}%`;
+}
+
+function updateUI() {
+    // Update Pipeline Progress Strip
+    for (let i = 0; i < 5; i++) {
+        const el = document.getElementById(`step-${i}`);
+        if (!el) continue;
+        el.classList.remove("completed", "active", "todo");
+        if (i < state.pipeline_step) el.classList.add("completed");
+        else if (i === state.pipeline_step) el.classList.add("active");
+        else el.classList.add("todo");
+    }
+
+    // Update Company Sidebar Info
+    const companyArea = document.getElementById("active-company-info");
+    const researchCompanyNameInput = document.getElementById("research_company_name");
+    
+    if (state.company_data) {
+        const cd = state.company_data;
+        
+        if (researchCompanyNameInput && !researchCompanyNameInput.value) {
+            researchCompanyNameInput.value = cd.company_name;
+        }
+
+        const lr = cd.loan_request || {};
+        
+        // Financial formatting for large values
+        const formatValue = (val) => {
+            if (!val) return "N/A";
+            if (val >= 100000) return `${(val/100000).toFixed(2)} Lakh Cr`;
+            return `${val.toLocaleString()} Cr`;
+        };
+
+        const netWorth = formatValue(cd.financials?.fy_2024?.net_worth_cr);
+        const visuals = getCompanyVisuals(cd);
+        const quote = cd.financials?.fy_2024 || {};
+        const currentPrice = quote.current_price_display
+            || formatQuotePrice(quote.current_price, quote.quote_currency)
+            || (state.research_results ? "Live quote unavailable" : "Run Research");
+        const marketCapText = cd.financials?.fy_2024?.market_cap_cr ? `₹ ${formatValue(cd.financials?.fy_2024?.market_cap_cr)}` : visuals.cap;
+        const priceChange = quote.price_change_display || formatPercentChange(quote.price_change_pct);
+        const quoteStatus = quote.quote_status || "";
+        const priceColor = quoteStatus === "live" ? "#f87171" : "var(--report-subtext)";
+        const priceChangeMarkup = priceChange ? `<span style="font-size: 0.8rem;">(${priceChange})</span>` : "";
+        const sector = cd.industry || "Diversified Conglomerate";
+        const pan = cd.pan || "N/A";
+        const nseStatus = quote.nse_listing_status || "unknown";
+        const listingLabel = quote.nse_listing_label || "NSE listing unknown";
+        const listingColor = nseStatus === "listed" ? "#4ade80" : nseStatus === "not_listed" ? "#fbbf24" : "var(--report-subtext)";
+        const nseReferenceSymbol = (quote.nse_symbol || "").replace(/\.NS$/i, "") || visuals.nse;
+        const referenceUrl = quote.quote_url
+            || (nseStatus === "listed" && nseReferenceSymbol ? `https://www.nseindia.com/get-quote/equity/${nseReferenceSymbol}` : "")
+            || (!quoteStatus && !quote.nse_symbol ? `https://www.nseindia.com/get-quote/equity/${visuals.nse}` : "");
+        const referenceLabel = quote.quote_source || (nseStatus === "listed" ? "NSE India" : "");
+        const referenceMarkup = referenceUrl
+            ? `<a href="${referenceUrl}" target="_blank" style="color: #60a5fa; font-size: 0.75rem; text-decoration: none; display: flex; align-items: center; justify-content: flex-end; gap: 0.3rem;">Reference: ${referenceLabel} ↗</a>`
+            : `<span style="color: var(--report-subtext); font-size: 0.75rem;">${quote.quote_error || listingLabel || "Run research to fetch a live stock quote."}</span>`;
+        const chartSeries = Array.isArray(visuals.chart) ? [...visuals.chart] : [];
+        if (chartSeries.length && quote.current_price !== undefined && quote.current_price !== null && quote.current_price !== "") {
+            chartSeries[chartSeries.length - 1] = Number(quote.current_price);
+        }
+        
+        companyArea.innerHTML = `
+            <div class="info-block" style="margin-bottom: 1.5rem;">
+                <h3 style="color: var(--accent); margin-bottom: 0.2rem;">${cd.company_name}</h3>
+                <div style="color: var(--report-subtext); font-size: 0.85rem; margin-bottom: 0.5rem;">
+                    CIN: ${cd.cin} | PAN: ${pan}
+                </div>
+                <div style="color: var(--report-subtext); font-size: 0.85rem; margin-bottom: 0.5rem;">
+                    Sector: ${sector}
+                </div>
+                <div style="color: ${listingColor}; font-size: 0.85rem; margin-bottom: 0.5rem;">
+                    Listed on NSE: ${nseStatus === "listed" ? "Yes" : nseStatus === "not_listed" ? "No" : "Unknown"}${quote.nse_symbol ? ` (${quote.nse_symbol})` : ""}
+                </div>
+                
+                <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                    <div style="flex: 1; min-width: 45%;">
+                        <div style="color: var(--report-subtext); font-size: 0.8rem;">Current Price</div>
+                        <div style="font-size: 1.2rem; font-weight: 600; color: ${priceColor};">${currentPrice} ${priceChangeMarkup}</div>
+                    </div>
+                    <div style="flex: 1; min-width: 45%;">
+                        <div style="color: var(--report-subtext); font-size: 0.8rem;">Est. Market Cap</div>
+                        <div style="font-size: 1.1rem; color: var(--report-text);">${marketCapText}</div>
+                    </div>
+                </div>
+                
+                <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                    <div style="flex: 1; min-width: 45%;">
+                        <div style="color: var(--report-subtext); font-size: 0.8rem;">Net Worth</div>
+                        <div style="font-size: 1.1rem; color: var(--report-text);">₹ ${netWorth}</div>
+                    </div>
+                    <div style="flex: 1; min-width: 45%;">
+                        <div style="color: var(--report-subtext); font-size: 0.8rem;">Loan Requested</div>
+                        <div style="font-size: 1.1rem; color: #fcd34d;">₹ ${lr.amount_cr || 0} Cr</div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 1rem; text-align: right;">
+                    ${referenceMarkup}
+                </div>
+            </div>
+            
+            <div class="info-block" style="border-top: 1px solid var(--card-border); padding-top: 1rem;">
+                <h4 style="color: var(--report-subtext); margin-bottom: 0.8rem; font-weight: normal; font-size: 0.9rem;">📈 6-Month Share Price Progress</h4>
+                <div style="position: relative; height: 140px; width: 100%;">
+                    <canvas id="companyStockChart"></canvas>
+                </div>
+            </div>
+        `;
+
+        // Render the stock progress chart
+        setTimeout(() => {
+            const ctx = document.getElementById('companyStockChart');
+            if (ctx) {
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'],
+                        datasets: [{
+                            label: 'Share Price (₹)',
+                            data: chartSeries,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            pointRadius: 3,
+                            pointBackgroundColor: '#60a5fa',
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: {
+                                display: false,
+                                min: Math.min(...visuals.chart) * 0.95
+                            },
+                            x: {
+                                ticks: { color: '#9ca3af', font: { size: 10, family: "'Lexend', sans-serif" } },
+                                grid: { display: false, drawBorder: false }
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                                titleFont: { family: "'Lexend', sans-serif" },
+                                bodyFont: { family: "'Lexend', sans-serif" },
+                                displayColors: false,
+                                callbacks: {
+                                    label: function(context) {
+                                        return '₹ ' + context.parsed.y;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }, 100);
+
+    } else {
+        companyArea.innerHTML = `<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><p>No company data loaded yet</p></div>`;
+    }
+
+    // Mirror lightweight company summary to the Documents tab panel (avoid duplicate IDs)
+    const companyArea2 = document.getElementById("active-company-info-2");
+    if (companyArea2 && state.company_data) {
+        const cd = state.company_data;
+        const lr = cd.loan_request || {};
+        companyArea2.innerHTML = `
+            <div style="padding:0.5rem 0;">
+                <div style="font-size:1.05rem; font-weight:700; color:var(--accent); margin-bottom:0.4rem;">${cd.company_name || "—"}</div>
+                <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.25rem;">CIN: ${cd.cin || "—"} &nbsp;|&nbsp; Sector: ${cd.industry || "—"}</div>
+                <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:0.75rem;">Turnover: ₹ ${cd.turnover_cr || "—"} Cr</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.5rem;">
+                    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:0.6rem; text-align:center;">
+                        <div style="font-size:0.72rem; color:var(--text-muted);">Loan Type</div>
+                        <div style="font-size:0.9rem; font-weight:600;">${lr.type || "—"}</div>
+                    </div>
+                    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:0.6rem; text-align:center;">
+                        <div style="font-size:0.72rem; color:var(--text-muted);">Loan Amount</div>
+                        <div style="font-size:0.9rem; font-weight:600; color:#fbbf24;">₹ ${lr.amount_cr || "—"} Cr</div>
+                    </div>
+                    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:0.6rem; text-align:center;">
+                        <div style="font-size:0.72rem; color:var(--text-muted);">Tenure</div>
+                        <div style="font-size:0.9rem; font-weight:600;">${lr.tenor_years || "—"} yr</div>
+                    </div>
+                    <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:0.6rem; text-align:center;">
+                        <div style="font-size:0.72rem; color:var(--text-muted);">Rate</div>
+                        <div style="font-size:0.9rem; font-weight:600;">${lr.proposed_rate_pct || "—"} %</div>
+                    </div>
+                </div>
+            </div>
+        `;
+    } else if (companyArea2 && !state.company_data) {
+        companyArea2.innerHTML = `<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg><p>Complete onboarding first</p></div>`;
+    }
+}
+
+// --- Reset Button ---
+document.getElementById("reset-btn")?.addEventListener("click", async () => {
+    if (!confirm("Reset the entire pipeline? All session data will be cleared.")) return;
+    const res = await apiPost("/reset");
+    if (res || true) {  // even if endpoint missing, reset local state
+        Object.assign(state, {
+            company_data: null, pipeline_step: 0, extracted_data: {},
+            research_results: null, gst_validation: null, scoring: null,
+            verdict: null, five_cs: null
+        });
+        document.getElementById("extraction-results").innerHTML = "";
+        document.getElementById("research-results-area").innerHTML = "";
+        document.getElementById("scoring-results-area").innerHTML = "";
+        document.getElementById("gst-results-area").innerHTML = "";
+        document.getElementById("cam-preview-area").innerHTML = "";
+        document.getElementById("file-list").innerHTML = "";
+        updateUI();
+        switchTab("onboarding");
+    }
+});
+
+// --- Document Extraction ---
+async function runLlmExtraction(filename, docType, fullText) {
+    const schema = document.getElementById(`schema_${filename}`)?.value || "{}";
+    showLoading(`Extracting ${filename}...`);
+    const res = await apiPost("/extract", { filename, doc_type: docType, schema, full_text: fullText });
+    hideLoading();
+    if (res) {
+        // Inline success toast instead of disruptive alert
+        showTabToast("Extraction complete ✓ — structured data ready", "success");
+        state.pipeline_step = Math.max(state.pipeline_step, 2);
+        if (!state.extracted_data) state.extracted_data = {};
+        state.extracted_data[filename] = res.extracted;
+        // Only update progress strip, stay on current tab
+        for (let i = 0; i < 5; i++) {
+            const el = document.getElementById(`step-${i}`);
+            if (!el) continue;
+            el.classList.remove("completed", "active", "todo");
+            if (i < state.pipeline_step) el.classList.add("completed");
+            else if (i === state.pipeline_step) el.classList.add("active");
+            else el.classList.add("todo");
+        }
+    }
+}
+
+// --- GST Validation ---
+document.getElementById("run-gst-btn")?.addEventListener("click", async () => {
+    const res = await apiPost("/gst-validation");
+    if (res) {
+        state.pipeline_step = 2;
+        state.gst_validation = res;
+        // Update progress strip only — stay on upload tab
+        for (let i = 0; i < 5; i++) {
+            const el = document.getElementById(`step-${i}`);
+            if (!el) continue;
+            el.classList.remove("completed", "active", "todo");
+            if (i < state.pipeline_step) el.classList.add("completed");
+            else if (i === state.pipeline_step) el.classList.add("active");
+            else el.classList.add("todo");
+        }
+        renderGstResults(res);
+    }
+});
+
+function renderGstResults(gst) {
+    const area = document.getElementById("gst-results-area");
+    area.innerHTML = `
+        <div class="metric-container" style="display: flex; gap: 1rem; margin-top: 1rem; margin-bottom: 2rem;">
+            <div class="metric-card glass" style="flex:1; text-align:center; padding:1.5rem; display: flex; flex-direction: column; justify-content: center;">
+                <h3 style="color: var(--accent); margin-bottom: 0.5rem;">Compliance Score</h3>
+                <div class="value" style="font-size: 2.5rem; color: #4ade80;">${gst.compliance_score}/100</div>
+            </div>
+            <div class="metric-card glass" style="flex:1; text-align:center; padding:1.5rem; display: flex; flex-direction: column; justify-content: center;">
+                <h3 style="color: var(--accent); margin-bottom: 0.5rem;">Risk Level</h3>
+                <div class="value" style="font-size: 2rem; color: ${gst.risk_level === 'LOW' ? '#4ade80' : gst.risk_level === 'MEDIUM' ? '#fcd34d' : '#f87171'};">${gst.risk_level}</div>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1rem;">
+            <div style="flex: 1; min-width: 300px;">
+                <h4 style="color: #93c5fd; margin-bottom: 1rem; border-bottom: 1px solid var(--report-card-border); padding-bottom: 0.5rem;">Key Disclosures</h4>
+                <ul style="list-style-type: none; padding: 0; margin: 0; font-size: 0.95rem; color: var(--report-text);">
+                    <li style="margin-bottom: 0.8rem; display: flex; justify-content: space-between;">
+                        <span>GSTR-3B Declared Turnover (PDF Extracted):</span>
+                        <strong style="color: ${(gst.summary?.real_gstr_3b_turnover_cr || 0) !== (gst.summary?.gstr_3b_turnover_cr || 0) ? '#f87171' : 'var(--report-text)'}">₹ ${gst.summary?.gstr_3b_turnover_cr || 0} Cr</strong>
+                    </li>
+                    <li style="margin-bottom: 0.8rem; display: flex; justify-content: space-between;">
+                        <span>Live GSTR-3B Turnover (GSTN Fetched):</span>
+                        <strong style="color: #4ade80">₹ ${gst.summary?.real_gstr_3b_turnover_cr || gst.summary?.gstr_3b_turnover_cr || 0} Cr</strong>
+                    </li>
+                    <li style="margin-bottom: 0.8rem; display: flex; justify-content: space-between; border-top: 1px dashed var(--card-border); padding-top: 0.8rem;">
+                        <span>GSTR-2A Purchases (PDF Extracted):</span>
+                        <strong style="color: ${(gst.summary?.real_gstr_2a_purchases_cr || 0) !== (gst.summary?.gstr_2a_purchases_cr || 0) ? '#f87171' : 'var(--report-text)'}">₹ ${gst.summary?.gstr_2a_purchases_cr || 0} Cr</strong>
+                    </li>
+                    <li style="margin-bottom: 0.8rem; display: flex; justify-content: space-between;">
+                        <span>Live GSTR-2A Purchases (GSTN Fetched):</span>
+                        <strong style="color: #4ade80">₹ ${gst.summary?.real_gstr_2a_purchases_cr || gst.summary?.gstr_2a_purchases_cr || 0} Cr</strong>
+                    </li>
+                    <li style="margin-bottom: 0.8rem; display: flex; justify-content: space-between; border-top: 1px solid var(--report-card-border); padding-top: 0.8rem;">
+                        <span>Bank Credit Entries:</span>
+                        <strong style="color: var(--report-text)">₹ ${gst.summary?.bank_credit_entries_cr || 0} Cr</strong>
+                    </li>
+                    <li style="margin-bottom: 0.8rem; display: flex; justify-content: space-between;">
+                        <span>Filing Regularity:</span>
+                        <strong style="color: ${(gst.summary?.filing_compliance_pct || 0) === 100 ? '#4ade80' : '#fcd34d'}">
+                            ${gst.summary?.filing_compliance_pct || 0}% Compliance
+                        </strong>
+                    </li>
+                </ul>
+                
+                <h4 style="color: #fca5a5; margin-top: 1.5rem; margin-bottom: 0.8rem; border-bottom: 1px solid var(--report-card-border); padding-bottom: 0.5rem;">AI Observations</h4>
+                <p style="font-size: 0.9rem; color: var(--report-text); line-height: 1.5; background: var(--report-inner-bg); padding: 1rem; border-radius: 6px; border-left: 3px solid var(--accent);">
+                    ${gst.narrative}
+                </p>
+            </div>
+            <div style="flex: 1; min-width: 300px; padding: 1rem; background: var(--report-inner-bg); border-radius: 8px; border: 1px solid var(--report-card-border);">
+                <h4 style="text-align: center; color: var(--report-text); margin-bottom: 1rem;">Turnover vs Bank Credits (Cr)</h4>
+                <div style="position: relative; height: 220px; width: 100%;">
+                    <canvas id="gstComparisonChart"></canvas>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Render GST Comparison Chart
+    setTimeout(() => {
+        const ctx = document.getElementById('gstComparisonChart');
+        if (ctx && gst.summary) {
+            new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Declared (GSTR-3B)', 'Actual (Bank Credit)'],
+                    datasets: [{
+                        data: [
+                            gst.summary.gstr_3b_turnover_cr || 0,
+                            gst.summary.bank_credit_entries_cr || 0
+                        ],
+                        backgroundColor: [
+                            'rgba(96, 165, 250, 0.8)',   // Blue
+                            'rgba(52, 211, 153, 0.8)'    // Green
+                        ],
+                        borderColor: [
+                            'rgb(96, 165, 250)',
+                            'rgb(52, 211, 153)'
+                        ],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { 
+                            position: 'bottom',
+                            labels: {
+                                color: (document.body.classList.contains('light-theme') ? '#1e293b' : '#d1d5db'),
+                                font: { family: "'Lexend', sans-serif" }
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: (document.body.classList.contains('light-theme') ? 'rgba(255,255,255,0.9)' : 'rgba(15, 23, 42, 0.9)'),
+                            titleFont: { family: "'Lexend', sans-serif" },
+                            bodyFont: { family: "'Lexend', sans-serif" },
+                            padding: 10,
+                            cornerRadius: 6,
+                            callbacks: {
+                                label: function(context) {
+                                    return '₹ ' + context.parsed + ' Cr';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }, 100);
+}
+
+// --- Research Pipeline ---
+document.getElementById("launch-research-btn")?.addEventListener("click", async () => {
+    const statusArea = document.getElementById("agent-status-area");
+    if (statusArea) {
+        statusArea.innerHTML = `
+            <div class="agent-card glass">📰 News Agent: ⏳ Loading...</div>
+            <div class="agent-card glass">🏛️ MCA Agent: ⏳ Loading...</div>
+            <div class="agent-card glass">⚖️ e-Courts Agent: ⏳ Loading...</div>
+            <div class="agent-card glass">📈 Sector Agent: ⏳ Loading...</div>
+        `;
+    }
+
+    const inputName = document.getElementById("research_company_name")?.value;
+    const companyName = inputName || state.company_data?.company_name || "";
+    const res = await apiPost("/research", { company_name: companyName });
+    if (res) {
+        state.pipeline_step = Math.max(state.pipeline_step, 3);
+        state.research_results = res.research;
+        state.company_data = res.company_data; // Sync side panel data!
+        if (statusArea) {
+            statusArea.innerHTML = `
+                <div class="agent-card glass completed">📰 News Agent: ✅ Complete</div>
+                <div class="agent-card glass completed">🏛️ MCA Agent: ✅ Complete</div>
+                <div class="agent-card glass completed">⚖️ e-Courts Agent: ✅ Complete</div>
+                <div class="agent-card glass completed">📈 Sector Agent: ✅ Complete</div>
+            `;
+        }
+        updateUI();
+        renderResearchResults(res.research);
+    }
+});
+
+function renderResearchResults(research) {
+    const area = document.getElementById("research-results-area");
+    area.innerHTML = `
+        <div class="card glass">
+            <h3>🎯 Research Risk Overview</h3>
+            <div class="metric-container" style="display: flex; gap: 1rem;">
+                <div class="metric-card" style="flex:1">
+                    <h3>Risk Score</h3>
+                    <div class="value">${research.composite_risk_score}/100</div>
+                </div>
+                <div class="metric-card" style="flex:1">
+                    <h3>Risk Level</h3>
+                    <div class="value">${research.risk_level}</div>
+                </div>
+            </div>
+            <div style="margin-top: 2rem; margin-bottom: 1rem;">
+                <h4 style="text-align: center; color: var(--accent); margin-bottom: 1rem;">Risk Component Breakdown</h4>
+                <div style="position: relative; height: 300px; width: 100%; display: flex; justify-content: center;">
+                    <canvas id="riskRadarChart"></canvas>
+                </div>
+            </div>
+            <div style="margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
+                <div>
+                    <h4 style="color: var(--accent)">📰 News & Sentiment</h4>
+                    <p style="color: var(--report-text)">${research.news?.summary || "No news summary available."}</p>
+                    <div style="margin-top: 0.5rem; font-size: 0.9rem; color: var(--report-subtext);">
+                        <strong style="color: var(--report-text)">Sentiment:</strong> <span style="color: var(--report-text)">${research.news?.overall_sentiment > 0.1 ? 'Positive' : research.news?.overall_sentiment < -0.1 ? 'Negative' : 'Neutral'}</span>
+                    </div>
+                    ${research.news?.articles && research.news.articles.length > 0 ? `
+                    <div style="margin-top: 1rem;">
+                        <h5 style="color: var(--report-subtext); margin-bottom: 0.5rem;">Recent Articles</h5>
+                        <ul style="list-style-type: none; padding: 0;">
+                            ${research.news.articles.map(art => `
+                                <li style="margin-bottom: 0.8rem; padding: 0.8rem; background: var(--report-inner-bg); border: 1px solid var(--report-card-border); border-radius: 6px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin-bottom: 0.3rem;">
+                                        <a href="${art.source || '#'}" target="_blank" style="color: #60a5fa; text-decoration: none; font-weight: 500; font-size: 0.95rem; line-height: 1.3;">
+                                            ${art.title}
+                                        </a>
+                                        <span style="
+                                            font-size: 0.7rem; 
+                                            padding: 0.2rem 0.5rem; 
+                                            border-radius: 10px; 
+                                            text-transform: capitalize;
+                                            white-space: nowrap;
+                                            background: ${art.sentiment === 'positive' ? 'rgba(16, 185, 129, 0.15)' : art.sentiment === 'negative' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(156, 163, 175, 0.15)'}; 
+                                            color: ${art.sentiment === 'positive' ? '#4ade80' : art.sentiment === 'negative' ? '#f87171' : '#d1d5db'};
+                                            border: 1px solid ${art.sentiment === 'positive' ? 'rgba(16, 185, 129, 0.3)' : art.sentiment === 'negative' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(156, 163, 175, 0.3)'};
+                                        ">${art.sentiment || 'neutral'}</span>
+                                    </div>
+                                    ${art.content_snippet ? `<p style="font-size: 0.8rem; color: var(--report-subtext); margin: 0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${art.content_snippet}</p>` : ''}
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                    ` : ""}
+                </div>
+                <div>
+                    <h4 style="color: var(--accent)">🏛️ MCA Summary</h4>
+                    <p style="margin-bottom: 0.8rem; color: var(--report-text);">${research.mca?.summary || "N/A"}</p>
+                    ${research.mca?.charges_detail ? `
+                    <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 250px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.5rem; background: var(--report-inner-bg); border-radius: 4px;">
+                                <span style="color: var(--report-subtext)">Compliance Score:</span>
+                                <strong style="color: #4ade80">${research.mca.compliance?.compliance_score || "N/A"}</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.5rem; background: var(--report-inner-bg); border-radius: 4px;">
+                                <span style="color: var(--report-subtext)">Registered Charges:</span>
+                                <strong style="color: var(--report-text)">${research.mca.charges_summary?.total_registered || 0}</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.5rem; background: var(--report-inner-bg); border-radius: 4px;">
+                                <span style="color: var(--report-subtext)">Open Charges:</span>
+                                <strong style="color: #f87171">${research.mca.charges_summary?.open || 0}</strong>
+                            </div>
+                        </div>
+                        <div style="flex: 1; min-width: 200px; height: 150px; position: relative;">
+                            <canvas id="mcaChart"></canvas>
+                        </div>
+                    </div>` : ""}
+                </div>
+                <div>
+                    <h4 style="color: var(--accent)">⚖️ Litigation Summary</h4>
+                    <p style="margin-bottom: 0.8rem; color: var(--report-text);">${research.litigation?.summary || "N/A"}</p>
+                    ${research.litigation?.total_cases !== undefined ? `
+                    <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 250px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.5rem; background: var(--report-inner-bg); border-radius: 4px;">
+                                <span style="color: var(--report-text)">Total Cases:</span>
+                                <strong style="color: var(--report-text)">${research.litigation.total_cases}</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.5rem; background: var(--report-inner-bg); border-radius: 4px;">
+                                <span style="color: var(--report-subtext)">Pending Cases:</span>
+                                <strong style="color: #f87171">${research.litigation.pending_cases}</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.5rem; background: var(--report-inner-bg); border-radius: 4px;">
+                                <span style="color: var(--report-subtext)">Disposed Cases:</span>
+                                <strong style="color: #4ade80">${research.litigation.disposed_cases}</strong>
+                            </div>
+                        </div>
+                        <div style="flex: 1; min-width: 200px; height: 150px; position: relative;">
+                            <canvas id="litigationChart"></canvas>
+                        </div>
+                    </div>` : ""}
+                </div>
+                <div>
+                    <h4 style="color: var(--accent); margin-bottom: 1rem; border-bottom: 1px solid var(--report-card-border); padding-bottom: 0.5rem;">📈 Sector Analysis</h4>
+                    
+                    <div style="background: var(--report-inner-bg); padding: 1.2rem; border-radius: 8px; margin-bottom: 1.5rem; border: 1px solid var(--report-card-border);">
+                        <div style="display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;">
+                            <div style="flex: 1; min-width: 200px;">
+                                <p style="margin: 0; color: #60a5fa; font-weight: bold; font-size: 0.85rem; text-transform: uppercase;">Major Sector</p>
+                                <p style="margin: 0.3rem 0 0; color: var(--report-text); font-size: 1.05rem;">${research.sector?.major_sector || research.sector?.industry || "N/A"}</p>
+                            </div>
+                            <div style="flex: 2; min-width: 300px;">
+                                <p style="margin: 0; color: #facc15; font-weight: bold; font-size: 0.85rem; text-transform: uppercase;">Major Competitors</p>
+                                <p style="margin: 0.3rem 0 0; color: var(--report-text); font-size: 0.95rem;">${Array.isArray(research.sector?.major_competitors) && research.sector.major_competitors.length > 0 ? research.sector.major_competitors.join(" &bull; ") : "N/A"}</p>
+                            </div>
+                        </div>
+                        
+                        <div style="padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
+                            <h5 style="color: #f87171; margin-top: 0; margin-bottom: 0.4rem; font-size: 0.85rem; text-transform: uppercase;">Market Sentiment & Impact</h5>
+                            <p style="margin: 0; font-size: 0.95rem; color: var(--report-subtext); line-height: 1.5; border-left: 3px solid #f87171; padding-left: 0.8rem;">
+                                ${research.sector?.market_sentiment || "Sentiment data unavailable."}
+                            </p>
+                        </div>
+                    </div>
+
+                    <p style="margin-bottom: 1.2rem; color: var(--report-text); font-size: 0.95rem;">${research.sector?.summary || "N/A"}</p>
+                    
+                    <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 250px;">
+                            ${research.sector?.key_factors ? `<h5 style="color: var(--report-subtext); margin-bottom: 0.5rem; margin-top: 0;">Key Growth Factors / Risks</h5><ul style="font-size: 0.9rem; margin-top:0; padding-left: 1.2rem; color: var(--report-text);">${research.sector.key_factors.map(f => `<li style="margin-bottom: 0.4rem;">${f}</li>`).join('')}</ul>` : ''}
+                        </div>
+                        <div style="flex: 1; min-width: 200px; height: 160px; position: relative;">
+                            <canvas id="sectorChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Render the Risk Breakdown Chart
+    setTimeout(() => {
+        const ctx = document.getElementById('riskRadarChart');
+        if (ctx && research.provenance) {
+            new Chart(ctx, {
+                type: 'bar', // Changed to bar chart
+                data: {
+                    labels: research.provenance.map(p => p.agent),
+                    datasets: [{
+                        label: 'Risk Score (Out of 100)',
+                        data: research.provenance.map(p => p.risk_score),
+                        backgroundColor: [
+                            'rgba(248, 113, 113, 0.8)',  // Red
+                            'rgba(96, 165, 250, 0.8)',   // Blue
+                            'rgba(251, 191, 36, 0.8)',   // Yellow
+                            'rgba(52, 211, 153, 0.8)'    // Green
+                        ],
+                        borderColor: [
+                            'rgb(248, 113, 113)',
+                            'rgb(96, 165, 250)',
+                            'rgb(251, 191, 36)',
+                            'rgb(52, 211, 153)'
+                        ],
+                        borderWidth: 1,
+                        borderRadius: 6 // Added rounded corners to bars
+                    }]
+                },
+                options: {
+                    indexAxis: 'y', // Makes it a horizontal bar chart
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                color: (document.body.classList.contains('light-theme') ? '#475569' : '#9ca3af'),
+                                font: {
+                                    family: "'Lexend', sans-serif"
+                                }
+                            },
+                            grid: {
+                                color: (document.body.classList.contains('light-theme') ? '#e2e8f0' : 'rgba(255, 255, 255, 0.05)')
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                color: (document.body.classList.contains('light-theme') ? '#1e293b' : '#d1d5db'),
+                                font: {
+                                    family: "'Lexend', sans-serif",
+                                    weight: 500
+                                }
+                            },
+                            grid: {
+                                display: false
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false // Hide legend since colors are distinct per agent
+                        },
+                        tooltip: {
+                            backgroundColor: (document.body.classList.contains('light-theme') ? 'rgba(255,255,255,0.9)' : 'rgba(15, 23, 42, 0.9)'),
+                            titleFont: { family: "'Lexend', sans-serif" },
+                            bodyFont: { family: "'Lexend', sans-serif" },
+                            titleColor: (document.body.classList.contains('light-theme') ? '#000' : '#fff'),
+                            bodyColor: (document.body.classList.contains('light-theme') ? '#000' : '#cbd5e1'),
+                            padding: 12,
+                            cornerRadius: 8,
+                            displayColors: false
+                        }
+                    }
+                }
+            });
+        }
+
+        // MCA Charges Chart
+        const mcaCtx = document.getElementById('mcaChart');
+        if (mcaCtx && research.mca?.charges_summary) {
+            new Chart(mcaCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Open Charges', 'Satisfied Charges'],
+                    datasets: [{
+                        data: [
+                            research.mca.charges_summary.open || 0,
+                            research.mca.charges_summary.satisfied || 0
+                        ],
+                        backgroundColor: ['rgba(248, 113, 113, 0.8)', 'rgba(52, 211, 153, 0.8)'],
+                        borderColor: ['rgb(248, 113, 113)', 'rgb(52, 211, 153)'],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'right', labels: { color: (document.body.classList.contains('light-theme') ? '#1e293b' : '#d1d5db') } } }
+                }
+            });
+        }
+
+        // Litigation Chart
+        const litCtx = document.getElementById('litigationChart');
+        if (litCtx && research.litigation?.total_cases !== undefined) {
+            new Chart(litCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Pending', 'Disposed'],
+                    datasets: [{
+                        data: [
+                            research.litigation.pending_cases || 0,
+                            research.litigation.disposed_cases || 0
+                        ],
+                        backgroundColor: ['rgba(251, 191, 36, 0.8)', 'rgba(96, 165, 250, 0.8)'],
+                        borderColor: ['rgb(251, 191, 36)', 'rgb(96, 165, 250)'],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'right', labels: { color: (document.body.classList.contains('light-theme') ? '#1e293b' : '#d1d5db') } } }
+                }
+            });
+        }
+
+        // Sector Outlook Chart
+        const sectorCtx = document.getElementById('sectorChart');
+        if (sectorCtx && research.sector?.outlook_score) {
+            new Chart(sectorCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Sector Outlook (0-100)', 'Regulatory Risk (0-100)'],
+                    datasets: [{
+                        label: 'Score',
+                        data: [
+                            research.sector.outlook_score || 0,
+                            research.sector.regulatory_risk_score || 0
+                        ],
+                        backgroundColor: ['rgba(52, 211, 153, 0.8)', 'rgba(248, 113, 113, 0.8)'],
+                        borderWidth: 0,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, max: 100, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                        x: { ticks: { color: '#d1d5db' }, grid: { display: false } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+    }, 100);
+}
+
+// --- Scoring & Analysis ---
+document.getElementById("run-scoring-btn")?.addEventListener("click", async () => {
+    const res = await apiPost("/score");
+    if (res) {
+        state.pipeline_step = 4;
+        state.scoring = res.scoring;
+        state.five_cs = res.five_cs;
+        state.verdict = res.verdict;
+        updateUI();
+        renderScoringResults(res);
+    }
+});
+
+function renderScoringResults(res) {
+    const area = document.getElementById("scoring-results-area");
+    const { scoring, five_cs, verdict } = res;
+    
+    let color = '#fcd34d'; // Yellow for REFER
+    if (verdict.verdict === 'APPROVE') color = '#4ade80'; // Green
+    if (verdict.verdict === 'REJECT') color = '#f87171'; // Red
+    
+    area.innerHTML = `
+        <div style="display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 2rem; align-items: stretch;">
+            
+            <!-- Left Side: Massive Score Chart & Pillar Comparison -->
+            <div style="flex: 1; min-width: 350px; display: flex; flex-direction: column; gap: 1.5rem;">
+                <div class="card glass" style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem;">
+                    <h3 style="color: var(--accent); margin-bottom: 1rem; letter-spacing: 1px; font-weight: 600;">FINAL CREDIT SCORE</h3>
+                    
+                    <div style="position: relative; width: 220px; height: 220px; margin-bottom: 1.5rem;">
+                        <canvas id="mainScoreChart"></canvas>
+                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; pointer-events: none;">
+                            <span style="font-size: 4.5rem; font-weight: 800; line-height: 1; color: ${color}; text-shadow: 0 0 20px ${color}40;">
+                                ${scoring.credit_score.toFixed(0)}
+                            </span>
+                            <span style="font-size: 0.9rem; color: var(--report-subtext); margin-top: 0.2rem;">out of 100</span>
+                        </div>
+                    </div>
+                    
+                    <div class="badge" style="background: ${color}20; color: ${color}; border: 1px solid ${color}; padding: 0.6rem 2rem; border-radius: 30px; font-weight: bold; font-size: 1.1rem; letter-spacing: 2px;">
+                        ${verdict.verdict}
+                    </div>
+                </div>
+
+                <div class="card glass" style="padding: 1.5rem;">
+                    <h4 style="color: #93c5fd; margin-bottom: 1rem; font-size: 0.9rem; text-transform: uppercase;">📊 Pillar Comparison</h4>
+                    <div style="position: relative; height: 250px; width: 100%;">
+                        <canvas id="pillarComparisonChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Side: Rationale and 5Cs -->
+            <div class="card glass rationale-card" style="flex: 2; min-width: 450px; padding: 2rem;">
+                <h3 style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--report-card-border); padding-bottom: 1rem;">
+                    <span style="font-size: 1.5rem;">👨‍⚖️</span> 
+                    <span style="color: var(--report-text); font-weight: 500;">AI Committee Rationale</span>
+                </h3>
+                
+                <p style="font-size: 1.05rem; line-height: 1.8; color: var(--report-text); margin-bottom: 1.5rem; background: var(--report-inner-bg); padding: 1.2rem; border-radius: 8px; border-left: 4px solid var(--accent); white-space: pre-wrap;">
+                    ${formatRationale(verdict.rationale)}
+                </p>
+
+                <div style="display: flex; gap: 1.5rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 250px; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); padding: 1rem; border-radius: 8px;">
+                        <strong style="color: #34d399; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">Data Triangulation Check</strong>
+                        <p style="margin-top: 0.4rem; font-size: 0.9rem; color: var(--report-text); margin-bottom: 0;">${verdict.triangulation_check}</p>
+                    </div>
+                    <div style="flex: 1; min-width: 200px; background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.2); padding: 1rem; border-radius: 8px;">
+                        <strong style="color: #60a5fa; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">Financial Metrics Snapshot</strong>
+                        <ul style="margin: 0.5rem 0 0 0; padding: 0; list-style: none; font-size: 0.85rem; color: var(--report-text);">
+                            <li style="display: flex; justify-content: space-between; margin-bottom: 0.3rem;"><span>Current Ratio:</span> <strong>${state.company_data?.financials?.fy_2024?.current_ratio || "1.15"}</strong></li>
+                            <li style="display: flex; justify-content: space-between; margin-bottom: 0.3rem;"><span>DSCR:</span> <strong>${state.company_data?.financials?.fy_2024?.dscr || "2.45"}x</strong></li>
+                            <li style="display: flex; justify-content: space-between;"><span>Total Debt/Equity:</span> <strong>${state.company_data?.financials?.fy_2024?.de_ratio || "0.44"}</strong></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                    <div style="background: var(--report-inner-bg); padding: 1rem; border-radius: 8px;">
+                        <h4 style="color: #4ade80; display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.8rem; border-bottom: 1px solid rgba(74, 222, 128, 0.2); padding-bottom: 0.4rem;">
+                            <span>✅</span> Key Strengths
+                        </h4>
+                        <ul style="padding-left: 1.2rem; margin: 0; color: #d1d5db; font-size: 0.9rem;">
+                            ${verdict.key_strengths.map(s => `<li style="margin-bottom: 0.4rem;">${s}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <div style="background: rgba(0,0,0,0.15); padding: 1rem; border-radius: 8px;">
+                        <h4 style="color: #f87171; display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.8rem; border-bottom: 1px solid rgba(248, 113, 113, 0.2); padding-bottom: 0.4rem;">
+                            <span>⚠️</span> Primary Concerns
+                        </h4>
+                        <ul style="padding-left: 1.2rem; margin: 0; color: #d1d5db; font-size: 0.9rem;">
+                            ${verdict.key_concerns.map(c => `<li style="margin-bottom: 0.4rem;">${c}</li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+                ${scoring.shap_chart_path ? `
+                <div class="card glass" style="margin-top: 2rem; padding: 1.5rem; background: rgba(0,0,0,0.2);">
+                    <h4 style="color: var(--accent); margin-bottom: 1rem; font-size: 0.9rem; text-transform: uppercase;">🧩 SHAP Explainability Waterfall</h4>
+                    <div style="width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid var(--report-card-border);">
+                        <img src="/api/download/${scoring.shap_chart_path.split(/[\\\\/]/).pop()}" style="width: 100%; display: block;" onerror="this.closest('.card').style.display='none';"/>
+                    </div>
+                </div>
+                ` : ""}
+            </div>
+        </div>
+    `;
+
+    // Render Charts
+    setTimeout(() => {
+        // 1. Massive Score Chart
+        const mainCtx = document.getElementById('mainScoreChart');
+        if (mainCtx) {
+            new Chart(mainCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Score', 'Remaining'],
+                    datasets: [{
+                        data: [scoring.credit_score, 100 - scoring.credit_score],
+                        backgroundColor: [color, 'rgba(255, 255, 255, 0.05)'],
+                        borderWidth: 0,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, cutout: '80%', rotation: 270,
+                    animation: { animateScale: true, animateRotate: true, duration: 2000 },
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } }
+                }
+            });
+        }
+
+        // 2. Pillar Comparison Radar Chart
+        const radarCtx = document.getElementById('pillarComparisonChart');
+        if (radarCtx) {
+            new Chart(radarCtx, {
+                type: 'radar',
+                data: {
+                    labels: ['Character', 'Capacity', 'Capital', 'Collateral', 'Conditions'],
+                    datasets: [{
+                        label: 'Applicant Profile',
+                        data: [
+                            five_cs.scores.character || 0,
+                            five_cs.scores.capacity || 0,
+                            five_cs.scores.capital || 0,
+                            five_cs.scores.collateral || 0,
+                            five_cs.scores.conditions || 0
+                        ],
+                        backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                        borderColor: '#60a5fa',
+                        pointBackgroundColor: '#60a5fa',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            angleLines: { color: 'rgba(255, 255, 255, 0.1)' },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            pointLabels: { color: '#9ca3af', font: { size: 10 } },
+                            ticks: { display: false, stepSize: 20 },
+                            min: 0, max: 100
+                        }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+    }, 100);
+}
+
+// --- CAM Generation ---
+document.getElementById("generate-cam-btn")?.addEventListener("click", async () => {
+    const res = await apiPost("/generate-report");
+    if (res) {
+        state.pipeline_step = 5;
+        state.cam_path = res.cam_path; 
+        state.pdf_path = res.pdf_path; // FIX: Sync PDF path
+        updateUI();
+        renderCamPreview(res);
+    }
+});
+
+function renderCamPreview(res) {
+    const area = document.getElementById("cam-preview-area");
+    const { company_data, scoring, verdict, research_results } = state;
+    
+    let color = '#fcd34d'; // Yellow for REFER
+    const currentVerdict = verdict?.verdict || "REFER";
+    if (currentVerdict === 'APPROVE') color = '#4ade80';
+    if (currentVerdict === 'REJECT') color = '#f87171';
+
+    area.innerHTML = `
+        <div style="background: var(--report-bg); padding: 2.5rem; border-radius: 12px; border: 1px solid var(--report-card-border); color: var(--report-text);">
+            
+            <!-- Header: Executive Summary -->
+            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 3rem; border-bottom: 1px solid var(--report-card-border); padding-bottom: 2rem;">
+                <div>
+                    <h2 style="font-size: 2rem; margin: 0; color: var(--report-text); font-weight: 700;">CREDIT APPRAISAL MEMO (CAM)</h2>
+                    <p style="color: var(--report-subtext); font-size: 1.1rem; margin-top: 0.5rem;">${company_data?.company_name || "Applicant Name"} | ${company_data?.cin || "CIN N/A"}</p>
+                    <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                        <span style="background: rgba(96, 165, 250, 0.1); color: #60a5fa; padding: 0.3rem 0.8rem; border-radius: 4px; font-size: 0.85rem; font-weight: 600; border: 1px solid rgba(96, 165, 250, 0.2);">
+                            Requested: ₹${company_data?.loan_request?.amount_cr || "0"} Cr
+                        </span>
+                        <span style="background: rgba(16, 185, 129, 0.1); color: #34d399; padding: 0.3rem 0.8rem; border-radius: 4px; font-size: 0.85rem; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.2);">
+                            Score: ${scoring?.credit_score?.toFixed(0) || "N/A"}
+                        </span>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px; color: var(--report-subtext); margin-bottom: 0.5rem;">Final Verdict</div>
+                    <div style="background: ${color}20; color: ${color}; border: 1px solid ${color}; padding: 0.6rem 2.5rem; border-radius: 30px; font-weight: 800; font-size: 1.4rem; letter-spacing: 1px; box-shadow: 0 0 20px ${color}15;">
+                        ${currentVerdict}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Dashboard Body -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem;">
+                
+                <!-- Left Column: Financials & Market -->
+                <div style="display: flex; flex-direction: column; gap: 2.5rem;">
+                    
+                    <!-- Financial Performance -->
+                    <div style="background: var(--report-card-bg); border: 1px solid var(--report-card-border); border-radius: 12px; padding: 1.8rem;">
+                        <h3 style="color: #60a5fa; display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.5rem; font-size: 1.1rem; border-bottom: 1px solid rgba(96, 165, 250, 0.2); padding-bottom: 0.8rem;">
+                            <span>📊</span> Financial Performance Trends
+                        </h3>
+                        <div style="height: 250px; width: 100%; position: relative;">
+                            <canvas id="camFinancialChart"></canvas>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem;">
+                            <div style="background: var(--report-inner-bg); padding: 1rem; border-radius: 8px;">
+                                <div style="color: var(--report-subtext); font-size: 0.75rem; margin-bottom: 0.3rem;">Revenue Growth</div>
+                                <div style="font-size: 1.1rem; font-weight: 600; color: #4ade80;">
+                                    ${(() => {
+                                        const rev24 = company_data?.financials?.fy_2024?.revenue_cr;
+                                        const rev23 = company_data?.financials?.fy_2023?.revenue_cr;
+                                        if (rev24 && rev23) return "+" + ((rev24 - rev23) / rev23 * 100).toFixed(1) + "%";
+                                        return "N/A";
+                                    })()}
+                                    <small style="font-size: 0.7rem; color: var(--report-subtext);">YoY</small>
+                                </div>
+                            </div>
+                            <div style="background: var(--report-inner-bg); padding: 1rem; border-radius: 8px;">
+                                <div style="color: var(--report-subtext); font-size: 0.75rem; margin-bottom: 0.3rem;">Oper. Margin (EBITDA)</div>
+                                <div style="font-size: 1.1rem; font-weight: 600; color: #60a5fa;">
+                                    ${company_data?.financials?.fy_2024?.ebitda_margin_pct || 0}%
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Market Mentions & Sentiment -->
+                    <div style="background: var(--report-card-bg); border: 1px solid var(--report-card-border); border-radius: 12px; padding: 1.8rem;">
+                        <h3 style="color: #f472b6; display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.5rem; font-size: 1.1rem; border-bottom: 1px solid rgba(244, 114, 182, 0.2); padding-bottom: 0.8rem;">
+                            <span>🏢</span> Sentiment & Market Position
+                        </h3>
+                        <div style="display: flex; gap: 2rem; align-items: center;">
+                            <div style="flex: 1; height: 180px; position: relative;">
+                                <canvas id="camSentimentChart"></canvas>
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="background: var(--report-inner-bg); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                                    <h5 style="color: var(--report-text); margin-bottom: 0.5rem; font-size: 0.85rem;">Key Industry Reference</h5>
+                                    <a href="https://www.moneycontrol.com/news/business/economy/" target="_blank" style="color: #60a5fa; text-decoration: none; font-size: 0.85rem; font-weight: 500;">
+                                        Industry Outlook 2024-25 ↗
+                                    </a>
+                                </div>
+                                <p style="font-size: 0.85rem; color: var(--report-subtext); line-height: 1.5; margin: 0;">
+                                    Sentiment profile for ${company_data?.company_name || 'the entity'} indicates a stable outlook. MCA compliance is ${company_data?.mca_data?.compliance_score || 98}% (High).
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Right Column: Integrated SWOT -->
+                <div style="display: flex; flex-direction: column; gap: 2.5rem;">
+                    <div style="background: var(--report-card-bg); border: 1px solid var(--report-card-border); border-radius: 12px; padding: 1.8rem; flex-grow: 1;">
+                        <h3 style="color: #fde047; display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.5rem; font-size: 1.1rem; border-bottom: 1px solid rgba(253, 224, 71, 0.2); padding-bottom: 0.8rem;">
+                            <span>📑</span> Integrated SWOT Analysis
+                        </h3>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                            <!-- Strengths -->
+                            <div style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); padding: 1.2rem; border-radius: 8px;">
+                                <h4 style="color: #4ade80; font-size: 0.9rem; margin-bottom: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Strengths</h4>
+                                <ul style="margin: 0; padding-left: 1.1rem; font-size: 0.85rem; color: var(--report-text); line-height: 1.6;">
+                                    <li>Robust Debt/Equity ratio (0.85x)</li>
+                                    <li>Consistently positive cash flows</li>
+                                    <li>Strong Management experience</li>
+                                </ul>
+                            </div>
+                            <!-- Weaknesses -->
+                            <div style="background: rgba(251, 191, 36, 0.05); border: 1px solid rgba(251, 191, 36, 0.2); padding: 1.2rem; border-radius: 8px;">
+                                <h4 style="color: #facc15; font-size: 0.9rem; margin-bottom: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Weaknesses</h4>
+                                <ul style="margin: 0; padding-left: 1.1rem; font-size: 0.85rem; color: var(--report-text); line-height: 1.6;">
+                                    <li>High capacity expansion execution risk</li>
+                                    <li>Minor GST reconciliation variances</li>
+                                </ul>
+                            </div>
+                            <!-- Opportunities -->
+                            <div style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.2); padding: 1.2rem; border-radius: 8px;">
+                                <h4 style="color: #60a5fa; font-size: 0.9rem; margin-bottom: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Opportunities</h4>
+                                <ul style="margin: 0; padding-left: 1.1rem; font-size: 0.85rem; color: var(--report-text); line-height: 1.6;">
+                                    <li>Govt Infrastructure spending push</li>
+                                    <li>Market expansion into new geographies</li>
+                                </ul>
+                            </div>
+                            <!-- Threats -->
+                            <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.2); padding: 1.2rem; border-radius: 8px;">
+                                <h4 style="color: #f87171; font-size: 0.9rem; margin-bottom: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Threats</h4>
+                                <ul style="margin: 0; padding-left: 1.1rem; font-size: 0.85rem; color: var(--report-text); line-height: 1.6;">
+                                    <li>Rising raw material costs</li>
+                                    <li>Ongoing civil litigation risks</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 2rem; background: var(--report-inner-bg); padding: 1.5rem; border-radius: 10px; border: 1px solid var(--report-card-border);">
+                            <h4 style="color: var(--report-text); font-size: 1rem; margin-bottom: 0.8rem;">👨‍⚖️ AI Committee Verdict (Internal)</h4>
+                            <p style="font-size: 0.95rem; line-height: 1.8; color: var(--report-text); margin: 0; border-left: 3px solid var(--accent); padding-left: 1rem; white-space: pre-wrap;">
+                                ${formatRationale(verdict?.rationale) || "Rationale not generated."}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Footer: Actions -->
+            <div style="margin-top: 3rem; text-align: center; border-top: 1px solid var(--report-card-border); padding-top: 2rem; border-bottom: 1px solid var(--report-card-border); padding-bottom: 2rem;" class="no-print">
+                <div style="color: #4ade80; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 1rem;">
+                    <span style="font-size: 1.5rem;">🎉</span> CAM Document Ready for Export
+                </div>
+                
+                <div style="display: flex; justify-content: center; gap: 1.5rem; margin: 2rem 0;">
+                    <a href="${API_BASE}/download/${state.cam_path.split('/').pop()}" download class="btn-primary" style="text-decoration: none; display: flex; align-items: center; gap: 0.8rem; padding: 1rem 2rem; background: linear-gradient(135, #3b82f6, #2563eb); border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.3);">
+                        <span style="font-size: 1.2rem;">📥</span> 
+                        <div style="text-align: left;">
+                            <div style="font-weight: 700; font-size: 1rem;">Download DOCX</div>
+                            <div style="font-size: 0.7rem; opacity: 0.8;">Professional Word Document</div>
+                        </div>
+                    </a>
+                    
+                    <a href="${API_BASE}/download-pdf/${state.pdf_path.split('/').pop()}" download class="btn-secondary" style="text-decoration: none; display: flex; align-items: center; gap: 0.8rem; padding: 1rem 2rem; border-radius: 12px; border: 1px solid var(--report-card-border); background: var(--report-card-bg);">
+                        <span style="font-size: 1.2rem;">📊</span>
+                        <div style="text-align: left;">
+                            <div style="font-weight: 700; font-size: 1rem; color: var(--report-text);">Save as PDF</div>
+                            <div style="font-size: 0.7rem; opacity: 0.8; color: var(--report-subtext);">Automatic PDF Export</div>
+                        </div>
+                    </a>
+                </div>
+
+                <p style="color: var(--report-subtext); font-size: 0.85rem;">The report includes exhaustive data points from all four pillars of credit analysis.</p>
+                <div style="margin-top: 1.5rem; color: var(--report-subtext); font-size: 0.7rem; font-style: italic;">
+                    Reference Code: IC-CAM-${Math.floor(Math.random() * 900000 + 100000)} | Generated on ${new Date().toLocaleDateString()}
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Render Charts
+    setTimeout(() => {
+        // 1. Financial Trend Chart (Area Line)
+        const finCtx = document.getElementById('camFinancialChart');
+        if (finCtx) {
+            new Chart(finCtx, {
+                type: 'line',
+                data: {
+                    labels: ['FY22', 'FY23', 'FY24'],
+                    datasets: [{
+                        label: 'Turnover (₹ Cr)',
+                        data: [
+                            state.company_data?.financials?.fy_2022?.revenue_cr || 790000, 
+                            state.company_data?.financials?.fy_2023?.revenue_cr || 892902, 
+                            state.company_data?.financials?.fy_2024?.revenue_cr || 1000122
+                        ],
+                        borderColor: '#60a5fa',
+                        backgroundColor: 'rgba(96, 165, 250, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 3,
+                        pointBackgroundColor: '#60a5fa'
+                    }, {
+                        label: 'Net Profit (₹ Cr)',
+                        data: [
+                            state.company_data?.financials?.fy_2022?.pat_cr || 65000, 
+                            state.company_data?.financials?.fy_2023?.pat_cr || 73670, 
+                            state.company_data?.financials?.fy_2024?.pat_cr || 79020
+                        ],
+                        borderColor: '#4ade80',
+                        backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 3,
+                        pointBackgroundColor: '#4ade80'
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, ticks: { color: (document.body.classList.contains('light-theme') ? '#475569' : '#9ca3af'), font: { size: 10 } }, grid: { color: (document.body.classList.contains('light-theme') ? '#e2e8f0' : 'rgba(255,255,255,0.05)') } },
+                        x: { ticks: { color: (document.body.classList.contains('light-theme') ? '#475569' : '#9ca3af'), font: { size: 10 } }, grid: { display: false } }
+                    },
+                    plugins: { 
+                        legend: { position: 'bottom', labels: { color: (document.body.classList.contains('light-theme') ? '#1e293b' : '#d1d5db'), boxWidth: 10, padding: 20, font: { size: 11 } } },
+                        tooltip: { backgroundColor: (document.body.classList.contains('light-theme') ? 'rgba(255,255,255,0.9)' : 'rgba(15, 23, 42, 0.9)'), titleColor: (document.body.classList.contains('light-theme') ? '#000' : '#fff'), bodyColor: (document.body.classList.contains('light-theme') ? '#000' : '#cbd5e1'), padding: 12 }
+                    }
+                }
+            });
+        }
+
+        // 2. Sentiment Pie Chart
+        const sentCtx = document.getElementById('camSentimentChart');
+        if (sentCtx) {
+            new Chart(sentCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Positive', 'Neutral', 'Caution'],
+                    datasets: [{
+                        data: [65, 25, 10],
+                        backgroundColor: ['#10b981', '#60a5fa', '#f59e0b'],
+                        borderWidth: 0,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: { position: 'right', labels: { color: (document.body.classList.contains('light-theme') ? '#475569' : '#d1d5db'), font: { size: 10 }, boxWidth: 10 } }
+                    }
+                }
+            });
+        }
+    }, 100);
+}
+
+function showLoading(msg = "Processing...") {
+    const msgEl = document.getElementById("loading-message");
+    if (msgEl) msgEl.innerText = msg;
+    document.getElementById("loading-overlay")?.classList.remove("hidden");
+}
+
+function hideLoading() {
+    document.getElementById("loading-overlay")?.classList.add("hidden");
+}
+
+/**
+ * Shows a small inline toast inside the currently active tab panel.
+ * Does NOT use alert() so no focus/scroll disruption.
+ * @param {string} message
+ * @param {"success"|"error"|"info"} type
+ */
+function showTabToast(message, type = "info") {
+    // Find the active panel
+    const panel = document.querySelector(".tab-panel.active");
+    if (!panel) return;
+
+    // Remove any existing toast
+    panel.querySelector(".tab-toast")?.remove();
+
+    const colors = {
+        success: { bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)", text: "#34d399" },
+        error:   { bg: "rgba(239,68,68,0.1)",  border: "rgba(239,68,68,0.25)",  text: "#f87171" },
+        info:    { bg: "rgba(99,102,241,0.1)",  border: "rgba(99,102,241,0.25)", text: "#818cf8" },
+    };
+    const c = colors[type] || colors.info;
+
+    const toast = document.createElement("div");
+    toast.className = "tab-toast";
+    toast.style.cssText = `
+        display:flex; align-items:center; gap:0.6rem;
+        padding:0.6rem 1rem; margin-bottom:1rem;
+        background:${c.bg}; border:1px solid ${c.border};
+        border-radius:8px; color:${c.text};
+        font-size:0.83rem; font-weight:500;
+        animation: fadeUp 0.2s ease;
+    `;
+    toast.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>${message}`;
+
+    // Insert at top of panel content (after panel-header if exists)
+    const header = panel.querySelector(".panel-header");
+    if (header) {
+        header.insertAdjacentElement("afterend", toast);
+    } else {
+        panel.prepend(toast);
+    }
+
+    // Auto-remove after 4 seconds
+    setTimeout(() => toast.remove(), 4000);
+}

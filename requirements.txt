@@ -1,0 +1,34 @@
+# Fin-Sight (Vercel-friendly) Dependencies
+#
+# Keep this file compatible with Vercel's Python 3.12 runtime.
+# For the full local stack, install `requirements-full.txt` instead.
+
+python-dotenv>=1.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Web requests / scraping (demo + fallback)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Document processing (optional endpoints)
+pdfplumber>=0.10.0
+PyMuPDF>=1.23.0
+pdf2image>=1.16.0
+
+# Report generation
+numpy>=1.24.0
+matplotlib>=3.7.0
+python-docx>=1.0.0
+fpdf2>=2.7.0
+
+# Optional web search (only used if key present)
+tavily-python>=0.3.0
+
+# Object storage (optional; enables large uploads on Vercel via S3/R2)
+boto3>=1.34.0
+
+# Oracle Cloud Infrastructure (hybrid: ADB thin driver — no Oracle Client needed)
+# Install with: pip install oracledb
+# oracledb>=2.0.0
