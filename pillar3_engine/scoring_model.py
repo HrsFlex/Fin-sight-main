@@ -134,7 +134,7 @@ def _train_model():
         # Save model
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(MODEL_PATH))
-        print(f"[Scoring] Model saved → {MODEL_PATH}")
+        print(f"[Scoring] Model saved to {MODEL_PATH}")
         return model
 
     except ImportError as e:
@@ -379,7 +379,7 @@ def _build_explanation(shap_vals: list, feature_names: list, score: float, decis
 
     lines.append(
         f"\n**Net Assessment:** Score of {score:.0f} is "
-        f"{'ABOVE ✅' if score >= 60 else 'BELOW ❌'} the approval threshold of 60."
+        f"{'ABOVE the approval threshold' if score >= 60 else 'BELOW the approval threshold'} of 60."
     )
 
     return "\n".join(lines)
