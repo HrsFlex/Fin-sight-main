@@ -59,7 +59,6 @@ document.addEventListener("DOMContentLoaded", async () => {
             badge.innerText = "Live";
             badge.className = "badge mode-live";
         }
-        initOracleDashboard(config);
     } else {
         // Backend not reachable
         const badge = document.getElementById("mode-badge");
@@ -74,112 +73,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         updateUI();
     }
 });
-
-// ═══════════════════════════════════════════════════════════════
-// ORACLE CLOUD DASHBOARD
-// ═══════════════════════════════════════════════════════════════
-
-function initOracleDashboard(config) {
-    const oracle = config.oracle || {};
-    const services = oracle.services || [];
-    const region = oracle.oracle_region || "ap-mumbai-1";
-    const ns = oracle.oracle_namespace || "fin-sight-oci";
-
-    // Update region tag
-    const regionText = document.getElementById("oracle-region-text");
-    if (regionText) regionText.textContent = region;
-
-    const nsLabel = document.getElementById("oci-namespace-label");
-    if (nsLabel) nsLabel.textContent = ns;
-
-    // Update header chips from server data
-    updateOracleChips(services);
-
-    // Populate dashboard cards
-    renderOracleServiceCards(services, region);
-
-    // Stats placeholder animation
-    animateOracleStats();
-}
-
-function updateOracleChips(services) {
-    const chipMap = {
-        "ADB": "chip-adb",
-        "OCI-OS": "chip-os",
-        "OCI-AI": "chip-ai",
-        "OCI-VM": "chip-vm",
-    };
-    services.forEach(svc => {
-        const chipId = chipMap[svc.short];
-        if (!chipId) return;
-        const chip = document.getElementById(chipId);
-        if (!chip) return;
-        chip.className = `oci-service-chip ${svc.status}`;
-    });
-}
-
-function renderOracleServiceCards(services, region) {
-    const grid = document.getElementById("oracle-dashboard-grid");
-    if (!grid) return;
-
-    const defaultServices = [
-        { name: "Oracle Autonomous Database", short: "ADB",    icon: "🗄️", status: "connected", detail: "Hybrid mode — sessions & audit logs persisted" },
-        { name: "OCI Object Storage",          short: "OCI-OS", icon: "☁️", status: "connected", detail: "Document & report archival bucket active" },
-        { name: "Oracle AI & ML Platform",     short: "OCI-AI", icon: "🤖", status: "active",    detail: "LangGraph agents + XGBoost on OCI Data Science" },
-        { name: "OCI Compute (FastAPI)",        short: "OCI-VM", icon: "⚡", status: "active",    detail: "FastAPI + Uvicorn hosted on OCI VM" },
-        { name: "OCI GenAI Service",            short: "GenAI",  icon: "🧠", status: "active",    detail: "LLM inference via OCI GenAI (OpenRouter gateway)" },
-        { name: "Oracle Key Management",        short: "KMS",    icon: "🔑", status: "active",    detail: "API key vault & secret management" },
-    ];
-
-    const svcList = (services && services.length > 0) ? services : defaultServices;
-
-    grid.innerHTML = svcList.map(svc => `
-        <div class="oracle-service-card status-${svc.status}">
-            <div class="oci-card-icon">${svc.icon}</div>
-            <div class="oci-card-name">${svc.name}</div>
-            <div class="oci-card-short">${svc.short}</div>
-            <div class="oci-card-status ${svc.status}">
-                <span class="adb-pulse" style="background:${svc.status==='active'?'#10b981':svc.status==='connected'?'#f97316':'#fbbf24'}"></span>
-                ${svc.status.charAt(0).toUpperCase() + svc.status.slice(1)}
-            </div>
-            <div class="oci-card-detail">${svc.detail}</div>
-            <div class="oci-card-region">🌏 ${region}</div>
-        </div>
-    `).join("");
-}
-
-function animateOracleStats() {
-    // Animated count-up for demo effect
-    const targets = {
-        "adb-stat-sessions": { val: 1, suffix: " active"},
-        "adb-stat-docs": { val: 0, suffix: " indexed" },
-        "adb-stat-audit": { val: 0, suffix: " events" },
-    };
-    Object.entries(targets).forEach(([id, cfg]) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = cfg.val + cfg.suffix;
-    });
-    const regionEl = document.getElementById("adb-stat-region");
-    if (regionEl && appConfig && appConfig.oracle_region) regionEl.textContent = appConfig.oracle_region;
-}
-
-async function refreshOracleDashboard() {
-    const status = await apiGet("/oracle-status");
-    if (!status) return;
-    updateOracleChips(status.services || []);
-    renderOracleServiceCards(status.services, status.oracle_region);
-    const regionEl = document.getElementById("adb-stat-region");
-    if (regionEl) regionEl.textContent = status.oracle_region || "ap-mumbai-1";
-}
-
-function flashAdbBanner(message) {
-    const banner = document.getElementById("adb-write-banner");
-    const text = document.getElementById("adb-write-text");
-    if (!banner) return;
-    if (text) text.textContent = message || "Oracle ADB — Writing session data...";
-    banner.style.display = "flex";
-    setTimeout(() => { banner.style.display = "none"; }, 3500);
-}
 
 // --- Tab Management ---
 function initTabs() {
@@ -212,44 +105,7 @@ function switchTab(tabId) {
 
 // --- Theme Management ---
 function initTheme() {
-    // New theme toggle button
-    const themeBtn = document.getElementById("theme-toggle-btn");
-    const iconMoon = document.getElementById("icon-moon");
-    const iconSun  = document.getElementById("icon-sun");
-
-    if (themeBtn) {
-        themeBtn.addEventListener("click", () => {
-            const isDark = document.body.classList.contains("dark-theme");
-            if (isDark) {
-                document.body.classList.replace("dark-theme", "light-theme");
-                state.theme = "light";
-                if (iconMoon) iconMoon.style.display = "none";
-                if (iconSun)  iconSun.style.display  = "block";
-            } else {
-                document.body.classList.replace("light-theme", "dark-theme");
-                state.theme = "dark";
-                if (iconMoon) iconMoon.style.display = "block";
-                if (iconSun)  iconSun.style.display  = "none";
-            }
-        });
-    }
-
-    // Backward-compat: old checkbox switch
-    const themeSwitch = document.getElementById("theme-switch");
-    if (themeSwitch) {
-        themeSwitch.addEventListener("change", () => {
-            const label = document.getElementById("theme-label");
-            if (themeSwitch.checked) {
-                document.body.classList.replace("light-theme", "dark-theme");
-                state.theme = "dark";
-                if (label) label.innerText = "🌙 Dark Mode";
-            } else {
-                document.body.classList.replace("dark-theme", "light-theme");
-                state.theme = "light";
-                if (label) label.innerText = "☀️ Light Mode";
-            }
-        });
-    }
+    // Light mode only — no toggle needed
 }
 
 // --- Utility: Rich Text Formatter ---
@@ -257,25 +113,25 @@ function formatRationale(text) {
     if (!text) return "";
     
     // 1. Handle Bold (Markdown style)
-    let formatted = text.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #f8fafc; font-weight: 700;">$1</strong>');
-    
+    let formatted = text.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #053057;">$1</strong>');
+
     // 2. Handle Italics
-    formatted = formatted.replace(/\*(.*?)\*/g, '<em style="color: #cbd5e1; font-style: italic;">$1</em>');
-    
+    formatted = formatted.replace(/\*(.*?)\*/g, '<em style="color: #314550; font-style: italic;">$1</em>');
+
     // 3. Colorize Key Financial Status Keywords
     const colorMap = {
-        "APPROVE": "#4ade80",
-        "REJECT": "#f87171",
-        "REFER": "#fcd34d",
-        "Low Risk": "#4ade80",
-        "High Risk": "#f87171",
-        "Consistency": "#34d399",
-        "Variance": "#fbbf24",
-        "Volatility": "#f87171",
-        "Adequate": "#60a5fa",
-        "Strong": "#4ade80",
-        "Clean": "#34d399",
-        "Moderate": "#fb923c"
+        "APPROVE": "#059669",
+        "REJECT": "#dc2626",
+        "REFER": "#d97706",
+        "Low Risk": "#059669",
+        "High Risk": "#dc2626",
+        "Consistency": "#059669",
+        "Variance": "#d97706",
+        "Volatility": "#dc2626",
+        "Adequate": "#2563eb",
+        "Strong": "#059669",
+        "Clean": "#059669",
+        "Moderate": "#d97706"
     };
 
     Object.keys(colorMap).forEach(key => {
@@ -490,7 +346,6 @@ function initForms() {
                 state.company_data = res.session.company_data;
                 state.pipeline_step = res.session.pipeline_step;
                 updateUI();
-                flashAdbBanner(`Oracle ADB — Session committed for ${companyName}`);
                 switchTab("upload");
             }
         });
@@ -507,7 +362,6 @@ function initForms() {
                 updateUI();
                 switchTab("upload");
                 fillFormWithData(res.company_data);
-                flashAdbBanner("Oracle ADB — Sample session written to intelli_credit_sessions");
 
                 const companyName = res.company_data?.company_name || "";
                 if (companyName) {
@@ -517,7 +371,6 @@ function initForms() {
                         state.research_results = researchRes.research;
                         state.company_data = researchRes.company_data;
                         updateUI();
-                        flashAdbBanner("Oracle ADB — Research results indexed");
                     }
                 }
             }
@@ -1115,34 +968,127 @@ function renderGstResults(gst) {
 }
 
 // --- Research Pipeline ---
+const RESEARCH_AGENTS = [
+    { key: "news",     icon: "📰", label: "News & Sentiment",    estSec: 15, desc: "Scanning news, press coverage & sentiment" },
+    { key: "mca",      icon: "🏛️", label: "MCA Filings",          estSec: 20, desc: "Directors, charges & compliance records" },
+    { key: "ecourts",  icon: "⚖️", label: "e-Courts / Litigation", estSec: 20, desc: "NJDG, NCLT, DRT case history" },
+    { key: "sector",   icon: "📈", label: "Sector Analysis",       estSec: 25, desc: "Industry outlook & regulatory environment" },
+    { key: "financial",icon: "💹", label: "Financial Intelligence", estSec: 10, desc: "Live financials & ratio analysis" },
+    { key: "promoter", icon: "👤", label: "Promoter Background",    estSec: 20, desc: "DIN status, adverse history & media" },
+    { key: "rbi",      icon: "🏦", label: "RBI / Defaulter Check",  estSec: 15, desc: "Willful defaulter, SEBI, NCLT flags" },
+];
+
+const RESEARCH_TIPS = [
+    "FinSight cross-validates bank credits against GST filings to detect revenue inflation.",
+    "All 7 agents run in parallel — total time is limited by the slowest, not the sum.",
+    "SHAP waterfall charts show exactly which factor drove the credit score up or down.",
+    "The 5 Cs framework dates to the 1800s; FinSight automates all five in minutes.",
+    "RBI's IT Master Direction 2023 requires AI credit models to be explainable — SHAP fulfills this.",
+    "Google News RSS is used as a free fallback when Tavily API credits are exhausted.",
+    "Promoter DIN checks help catch shell-company structures before disbursement.",
+    "India's banking NPAs peaked at ₹10.36 lakh crore — early detection is everything.",
+    "The XGBoost model was trained on 5,000 synthetic Indian corporate credit samples.",
+    "Bank statement bounce rate analysis is a powerful behavioral signal often missed manually.",
+];
+
+function buildAgentPipeline(statusArea) {
+    statusArea.innerHTML = `<div class="agent-pipeline" id="agent-pipeline-grid"></div>`;
+    const grid = document.getElementById("agent-pipeline-grid");
+    RESEARCH_AGENTS.forEach(agent => {
+        const card = document.createElement("div");
+        card.className = "agent-pipeline-card state-pending";
+        card.id = `agent-card-${agent.key}`;
+        card.innerHTML = `
+            <div class="agent-card-header">
+                <span class="agent-card-name">${agent.icon} ${agent.label}</span>
+                <span class="agent-card-badge badge-pending" id="badge-${agent.key}">Pending</span>
+            </div>
+            <div class="agent-card-meta">${agent.desc}</div>
+            <div class="agent-card-timing" id="timing-${agent.key}">~${agent.estSec}s estimated</div>
+        `;
+        grid.appendChild(card);
+    });
+}
+
+function setAgentState(key, state, elapsedSec) {
+    const card = document.getElementById(`agent-card-${key}`);
+    const badge = document.getElementById(`badge-${key}`);
+    const timing = document.getElementById(`timing-${key}`);
+    if (!card) return;
+    card.className = `agent-pipeline-card state-${state}`;
+    if (badge) {
+        badge.className = `agent-card-badge badge-${state}`;
+        badge.textContent = state === "running" ? "Running…" : state === "done" ? "Done" : state === "error" ? "Error" : "Pending";
+    }
+    if (timing && state === "done" && elapsedSec != null) {
+        timing.textContent = `Completed in ${elapsedSec}s`;
+    }
+}
+
 document.getElementById("launch-research-btn")?.addEventListener("click", async () => {
     const statusArea = document.getElementById("agent-status-area");
-    if (statusArea) {
-        statusArea.innerHTML = `
-            <div class="agent-card glass">📰 News Agent: ⏳ Loading...</div>
-            <div class="agent-card glass">🏛️ MCA Agent: ⏳ Loading...</div>
-            <div class="agent-card glass">⚖️ e-Courts Agent: ⏳ Loading...</div>
-            <div class="agent-card glass">📈 Sector Agent: ⏳ Loading...</div>
-        `;
-    }
+    if (statusArea) buildAgentPipeline(statusArea);
 
     const inputName = document.getElementById("research_company_name")?.value;
     const companyName = inputName || state.company_data?.company_name || "";
+
+    // Animate agents: stagger "running" state, then resolve all after API returns
+    const startTimes = {};
+    let tipIndex = Math.floor(Math.random() * RESEARCH_TIPS.length);
+
+    // Show running states staggered over first ~5s
+    RESEARCH_AGENTS.forEach((agent, i) => {
+        setTimeout(() => {
+            setAgentState(agent.key, "running", null);
+            startTimes[agent.key] = Date.now();
+        }, i * 700);
+    });
+
+    // Tip rotator while request is in flight
+    const tipEl = document.getElementById("loading-tip");
+    const tipTimer = setInterval(() => {
+        if (tipEl) {
+            tipEl.style.opacity = "0";
+            setTimeout(() => {
+                tipEl.textContent = "💡 " + RESEARCH_TIPS[tipIndex % RESEARCH_TIPS.length];
+                tipEl.style.opacity = "1";
+                tipIndex++;
+            }, 300);
+        }
+    }, 5000);
+    if (tipEl) tipEl.textContent = "💡 " + RESEARCH_TIPS[tipIndex % RESEARCH_TIPS.length];
+
+    // Countdown ETA display
+    const totalEstSec = 30; // wall-clock estimate for parallel run
+    const etaEl = document.getElementById("loading-eta");
+    let remaining = totalEstSec;
+    const countdownTimer = setInterval(() => {
+        remaining = Math.max(0, remaining - 1);
+        if (etaEl) etaEl.textContent = remaining > 0 ? `~${remaining}s remaining` : "Finalising…";
+    }, 1000);
+
     const res = await apiPost("/research", { company_name: companyName });
+
+    clearInterval(tipTimer);
+    clearInterval(countdownTimer);
+    if (etaEl) etaEl.textContent = "Complete";
+
     if (res) {
+        // Mark all agents done with real timing
+        RESEARCH_AGENTS.forEach(agent => {
+            const elapsed = startTimes[agent.key]
+                ? Math.round((Date.now() - startTimes[agent.key]) / 1000)
+                : null;
+            setAgentState(agent.key, "done", elapsed);
+        });
+
         state.pipeline_step = Math.max(state.pipeline_step, 3);
         state.research_results = res.research;
-        state.company_data = res.company_data; // Sync side panel data!
-        if (statusArea) {
-            statusArea.innerHTML = `
-                <div class="agent-card glass completed">📰 News Agent: ✅ Complete</div>
-                <div class="agent-card glass completed">🏛️ MCA Agent: ✅ Complete</div>
-                <div class="agent-card glass completed">⚖️ e-Courts Agent: ✅ Complete</div>
-                <div class="agent-card glass completed">📈 Sector Agent: ✅ Complete</div>
-            `;
-        }
+        state.company_data = res.company_data;
         updateUI();
         renderResearchResults(res.research);
+    } else {
+        RESEARCH_AGENTS.forEach(agent => setAgentState(agent.key, "error", null));
     }
 });
 
@@ -1887,9 +1833,34 @@ function renderCamPreview(res) {
     }, 100);
 }
 
-function showLoading(msg = "Processing...") {
-    const msgEl = document.getElementById("loading-message");
-    if (msgEl) msgEl.innerText = msg;
+function showLoading(msg = "Processing...", opts = {}) {
+    const { stage = "", eta = "", progress = 0, steps = [] } = opts;
+
+    const msgEl    = document.getElementById("loading-message");
+    const stageEl  = document.getElementById("loading-stage");
+    const etaEl    = document.getElementById("loading-eta");
+    const fillEl   = document.getElementById("loading-progress-fill");
+    const stepsEl  = document.getElementById("loading-steps");
+    const tipEl    = document.getElementById("loading-tip");
+
+    if (msgEl)   msgEl.innerText  = msg;
+    if (stageEl) stageEl.textContent = stage;
+    if (etaEl)   etaEl.textContent   = eta;
+    if (fillEl)  fillEl.style.width  = `${Math.min(100, progress)}%`;
+
+    if (stepsEl && steps.length) {
+        stepsEl.innerHTML = steps.map(s => `
+            <div class="overlay-step step-${s.state || 'pending'}">
+                <span class="step-icon">${s.state === 'done' ? '✅' : s.state === 'running' ? '⟳' : '○'}</span>
+                <span>${s.label}</span>
+            </div>
+        `).join("");
+    }
+
+    if (tipEl && !tipEl.textContent) {
+        tipEl.textContent = "💡 " + RESEARCH_TIPS[Math.floor(Math.random() * RESEARCH_TIPS.length)];
+    }
+
     document.getElementById("loading-overlay")?.classList.remove("hidden");
 }
 

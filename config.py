@@ -90,20 +90,6 @@ DATABRICKS_WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID", "")
 DATABRICKS_CATALOG = os.getenv("DATABRICKS_CATALOG", "intelli_credit")
 DATABRICKS_SCHEMA = os.getenv("DATABRICKS_SCHEMA", "credit_engine")
 
-# --- Oracle Cloud Infrastructure (OCI) ---
-# Oracle Autonomous Database (ADB)
-ORACLE_DSN          = os.getenv("ORACLE_DSN", "")          # e.g. myadb_high or full DSN
-ORACLE_USER         = os.getenv("ORACLE_USER", "ADMIN")
-ORACLE_PASSWORD     = os.getenv("ORACLE_PASSWORD", "")
-ORACLE_WALLET_DIR   = os.getenv("ORACLE_WALLET_DIR", "")   # Path to unzipped ADB wallet
-
-# OCI Object Storage (S3-compatible endpoint)
-OCI_NAMESPACE       = os.getenv("OCI_NAMESPACE", "")       # Tenancy namespace
-OCI_BUCKET          = os.getenv("OCI_BUCKET", "fin-sight-uploads")
-OCI_REGION          = os.getenv("OCI_REGION", "ap-mumbai-1")
-OCI_S3_ENDPOINT     = os.getenv("OCI_S3_ENDPOINT", "")    # https://<ns>.compat.objectstorage.<region>.oraclecloud.com
-OCI_TENANCY         = os.getenv("OCI_TENANCY", "intelli-credit")
-
 # --- LLM Config ---
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()  # "openai" or "anthropic"
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o" if LLM_PROVIDER == "openai" else "claude-sonnet-4-20250514")
@@ -179,21 +165,6 @@ def has_databricks() -> bool:
     return bool(DATABRICKS_HOST) and bool(DATABRICKS_TOKEN)
 
 
-def has_oracle_db() -> bool:
-    """Check if Oracle Autonomous Database is configured."""
-    return bool(ORACLE_DSN) and bool(ORACLE_USER) and bool(ORACLE_PASSWORD)
-
-
-def has_oci_storage() -> bool:
-    """Check if OCI Object Storage S3-compatible endpoint is configured."""
-    return bool(OCI_BUCKET) and bool(OCI_S3_ENDPOINT)
-
-
-def has_oracle_any() -> bool:
-    """Check if any Oracle Cloud service is configured."""
-    return has_oracle_db() or has_oci_storage() or bool(OCI_NAMESPACE)
-
-
 def get_llm_client():
     """Get the configured LLM client (OpenRouter, OpenAI or Anthropic).
     OpenRouter is the highest priority since we have that key configured.
@@ -251,13 +222,6 @@ def get_mode_display() -> str:
         parts.append("Azure DI")
     if has_databricks():
         parts.append("Databricks")
-    # Oracle Cloud services always shown when namespace or keys present
-    if has_oracle_db():
-        parts.append("Oracle ADB")
-    if has_oci_storage():
-        parts.append("OCI Storage")
-    elif has_oracle_any():
-        parts.append("OCI Connected")
     if parts:
         return f"🟢 Live Mode ({', '.join(parts)})"
     else:

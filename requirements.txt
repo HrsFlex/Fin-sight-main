@@ -28,7 +28,3 @@ tavily-python>=0.3.0
 
 # Object storage (optional; enables large uploads on Vercel via S3/R2)
 boto3>=1.34.0
-
-# Oracle Cloud Infrastructure (hybrid: ADB thin driver — no Oracle Client needed)
-# Install with: pip install oracledb
-# oracledb>=2.0.0

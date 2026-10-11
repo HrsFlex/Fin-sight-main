@@ -74,14 +74,15 @@ def _get_demo_mca(company_name: str, cin: str) -> dict:
 
 
 def _search_mca_live(company_name: str, cin: str) -> dict:
-    """Search for MCA data via web search."""
+    """Search for MCA data via web search with LLM extraction."""
     try:
         from tavily import TavilyClient
         client = TavilyClient(api_key=TAVILY_API_KEY)
 
         queries = [
-            f"{company_name} MCA21 company details charges India",
-            f"site:mca.gov.in {cin}" if cin else f"{company_name} CIN India company registration",
+            f"{company_name} MCA21 company details directors charges India site:mca.gov.in OR site:zaubacorp.com OR site:tofler.in",
+            f"{cin} MCA company registration" if cin else f"{company_name} CIN director DIN India company registration",
+            f"{company_name} ROC filing annual return compliance",
         ]
 
         findings = []
@@ -89,26 +90,86 @@ def _search_mca_live(company_name: str, cin: str) -> dict:
             try:
                 result = client.search(query=query, max_results=3, search_depth="basic")
                 for r in result.get("results", []):
-                    findings.append({
-                        "source": r.get("url", ""),
-                        "content": r.get("content", "")[:500],
-                    })
+                    findings.append(f"Source: {r.get('url')}\n{r.get('content', '')[:500]}")
             except Exception:
                 continue
 
-        # Parse findings into structured format
+        if not findings:
+            raise Exception("No MCA search results found")
+
+        from config import has_llm_key, get_llm_client
+        if has_llm_key():
+            llm = get_llm_client()
+            prompt = f"""Extract MCA21 data for '{company_name}' from these web search results.
+
+{chr(10).join(findings[:6])}
+
+Return ONLY a valid JSON object:
+{{
+  "directors": [{{"name": "str", "din": "str", "designation": "str", "disqualified": false}}],
+  "open_charges": 0,
+  "satisfied_charges": 0,
+  "compliance_score": 70,
+  "roc_notices": 0,
+  "annual_return_filed": true,
+  "risk_flags": [],
+  "risk_score": 35,
+  "summary": "str"
+}}
+If data is unavailable for a field, use sensible defaults (0 for counts, 70 for compliance_score, false for booleans)."""
+            try:
+                import json as _json
+                response = llm.invoke(prompt)
+                content = response.content
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0]
+                data = _json.loads(content.strip())
+                return {
+                    "company_name": company_name,
+                    "cin": cin or "Not available",
+                    "directors": data.get("directors", []),
+                    "charges": {
+                        "open": data.get("open_charges", 0),
+                        "satisfied": data.get("satisfied_charges", 0),
+                        "total_registered": data.get("open_charges", 0) + data.get("satisfied_charges", 0),
+                    },
+                    "compliance": {
+                        "compliance_score": data.get("compliance_score", 70),
+                        "roc_notices": data.get("roc_notices", 0),
+                        "annual_returns_filed": data.get("annual_return_filed", True),
+                    },
+                    "risk_score": data.get("risk_score", 35),
+                    "risk_flags": data.get("risk_flags", []),
+                    "summary": data.get("summary", f"MCA data extracted from web search for {company_name}."),
+                    "method": "tavily_llm_live",
+                }
+            except Exception:
+                pass
+
+        # Heuristic fallback
+        risk_score = 35
         risk_flags = []
-        risk_score = 30  # Default moderate
+        for f in findings:
+            fl = f.lower()
+            if any(w in fl for w in ["disqualified", "struck off", "winding up", "wilful"]):
+                risk_score += 20
+                risk_flags.append("Adverse MCA finding detected")
+            if "open charge" in fl or "charge created" in fl:
+                risk_score += 10
+        risk_score = min(risk_score, 100)
 
         return {
             "company_name": company_name,
-            "cin": cin or "Not found",
-            "web_findings": findings,
+            "cin": cin or "Not available",
+            "web_findings": [f[:200] for f in findings[:3]],
             "risk_score": risk_score,
             "risk_flags": risk_flags,
-            "summary": f"Found {len(findings)} web results about MCA filings for {company_name}.",
+            "compliance": {"compliance_score": max(0, 100 - risk_score)},
+            "summary": f"Found {len(findings)} web results for MCA data on {company_name}. Manual verification recommended.",
             "method": "tavily_live",
-            "note": "Live MCA data requires direct MCA21 portal access for full details.",
+            "note": "Full MCA data requires direct MCA21 portal access.",
         }
 
     except Exception as e:

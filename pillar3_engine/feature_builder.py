@@ -78,8 +78,8 @@ def _build_character(research: dict) -> dict:
         "news_sentiment_score": news.get("overall_sentiment", 0),
         "mca_compliance_score": mca.get("compliance", {}).get("compliance_score",
                                                                mca.get("risk_score", 50)),
-        "prior_defaults": 0,  # From CIBIL data if available
-        "director_disqualifications": 0,
+        "prior_defaults": research.get("rbi_check", {}).get("default_count", 0),
+        "director_disqualifications": sum(1 for d in mca.get("directors", []) if d.get("disqualified", False)),
         "roc_notices": mca.get("compliance", {}).get("roc_notices", 0),
     }
 

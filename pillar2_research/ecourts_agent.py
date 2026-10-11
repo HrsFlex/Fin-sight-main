@@ -53,17 +53,18 @@ def _get_demo_litigation(company_name: str = "Bharat Steel Industries") -> dict:
 
 
 def _search_litigation_live(company_name: str, promoter_names: list[str]) -> dict:
-    """Search for litigation data via web search."""
+    """Search for litigation data via web search with LLM extraction."""
     try:
         from tavily import TavilyClient
         client = TavilyClient(api_key=TAVILY_API_KEY)
 
         queries = [
-            f"{company_name} court case litigation India",
-            f"{company_name} NCLT NCLAT case",
+            f"{company_name} court case litigation NCLT NCLAT India",
+            f"{company_name} DRT debt recovery tribunal case",
+            f"{company_name} consumer court case India",
         ]
         for name in promoter_names[:2]:
-            queries.append(f"{name} court case litigation")
+            queries.append(f"{name} court case criminal arrest FIR India")
 
         findings = []
         for query in queries:
@@ -78,18 +79,81 @@ def _search_litigation_live(company_name: str, promoter_names: list[str]) -> dic
             except Exception:
                 continue
 
-        risk_score = 30 + len(findings) * 5  # Higher findings = higher risk
+        from config import has_llm_key, get_llm_client
+        if has_llm_key() and findings:
+            llm = get_llm_client()
+            import json as _json
+            prompt = f"""Analyze litigation risk for '{company_name}' from these web search results.
+
+{_json.dumps(findings[:8], indent=1)}
+
+Return ONLY a valid JSON object:
+{{
+  "total_cases": 0,
+  "pending_cases": 0,
+  "criminal_cases": 0,
+  "civil_cases": 0,
+  "drt_cases": 0,
+  "nclt_cases": 0,
+  "total_exposure_cr": 0.0,
+  "risk_score": 25,
+  "risk_level": "LOW",
+  "key_cases": [],
+  "summary": "str"
+}}
+Base estimates on keywords found. If no cases found, use 0s and LOW risk."""
+            try:
+                response = llm.invoke(prompt)
+                content = response.content
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0]
+                data = _json.loads(content.strip())
+                return {
+                    "company_name": company_name,
+                    "total_cases": data.get("total_cases", 0),
+                    "pending_cases": data.get("pending_cases", 0),
+                    "criminal_cases": data.get("criminal_cases", 0),
+                    "civil_cases": data.get("civil_cases", 0),
+                    "drt_cases": data.get("drt_cases", 0),
+                    "nclt_cases": data.get("nclt_cases", 0),
+                    "total_exposure_cr": data.get("total_exposure_cr", 0.0),
+                    "risk_score": data.get("risk_score", 25),
+                    "risk_level": data.get("risk_level", "LOW"),
+                    "key_cases": data.get("key_cases", []),
+                    "summary": data.get("summary", f"Litigation analysis completed for {company_name}."),
+                    "sources_checked": [f["source"] for f in findings[:5]],
+                    "method": "tavily_llm_live",
+                }
+            except Exception:
+                pass
+
+        # Heuristic fallback
+        risk_score = 15
+        criminal_cases = 0
+        for f in findings:
+            fl = (f["title"] + " " + f["content"]).lower()
+            if any(w in fl for w in ["criminal", "arrest", "fir", "murder", "fraud"]):
+                risk_score += 25
+                criminal_cases += 1
+            elif any(w in fl for w in ["nclt", "nclat", "insolvency", "drt"]):
+                risk_score += 15
+            elif any(w in fl for w in ["case", "court", "tribunal", "litigation"]):
+                risk_score += 5
+        risk_score = min(risk_score, 100)
 
         return {
             "company_name": company_name,
-            "web_findings": findings,
+            "total_cases": len([f for f in findings if "case" in (f["title"] + f["content"]).lower()]),
+            "pending_cases": 0,
+            "criminal_cases": criminal_cases,
             "total_results": len(findings),
-            "risk_score": min(risk_score, 100),
+            "risk_score": risk_score,
             "risk_level": "LOW" if risk_score < 30 else "MODERATE" if risk_score < 60 else "HIGH",
             "summary": f"Found {len(findings)} web results related to litigation for {company_name}.",
-            "sources_checked": [q for q in queries],
+            "sources_checked": [f["source"] for f in findings[:5]],
             "method": "tavily_live",
-            "note": "For comprehensive litigation data, direct NJDG portal access is recommended.",
         }
 
     except Exception as e:

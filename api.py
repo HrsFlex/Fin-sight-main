@@ -22,17 +22,13 @@ from config import (
     S3_UPLOAD_MAX_MB,
     get_mode_display,
     has_s3_storage,
-    has_oracle_any,
 )
 from utils import format_inr, load_json, merge_research_financials
-from utils.oracle_facade import (
-    oracle_status,
+from utils.session_store import (
     upsert_session,
     load_session,
     insert_document,
     log_audit,
-    has_oracle_db,
-    has_oci_storage,
 )
 from pillar1_ingestor.ocr_engine import extract_text_from_uploaded_file
 from pillar1_ingestor.document_classifier import classify_document
@@ -78,11 +74,11 @@ session_state = {
 
 
 def _persist_session():
-    """Flush current session state to Oracle ADB (hybrid: SQLite)."""
+    """Flush current session state to SQLite."""
     try:
         upsert_session(_DEFAULT_SESSION_ID, session_state)
     except Exception as _e:
-        print(f"[OCI] Session persist warning: {_e}")
+        print(f"Session persist warning: {_e}")
 
 def _process_document_from_path(file_path: Path, filename: str) -> dict:
     class MockFile:
@@ -163,33 +159,19 @@ class CompanyProfileRequest(BaseModel):
 @app.get("/api/config")
 async def get_config():
     from config import get_mode_display, IS_DEMO, has_llm_key, has_tavily_key
-    oci_status = oracle_status()
     return {
         "mode_display": get_mode_display(),
         "is_demo": IS_DEMO,
         "has_llm": has_llm_key(),
         "has_search": has_tavily_key(),
-        "has_storage": has_s3_storage() or has_oci_storage(),
+        "has_storage": has_s3_storage(),
         "storage_max_upload_mb": S3_UPLOAD_MAX_MB,
-        # Oracle Cloud metadata (always present so frontend shows OCI badges)
-        "oracle": oci_status,
-        "has_oracle_db": has_oracle_db(),
-        "has_oci_storage": has_oci_storage(),
-        "oracle_region": oci_status["oracle_region"],
-        "oracle_tenant": oci_status["oracle_tenant"],
     }
-
-
-@app.get("/api/oracle-status")
-async def get_oracle_status():
-    """Dedicated Oracle Cloud infrastructure status endpoint."""
-    log_audit(_DEFAULT_SESSION_ID, "oracle_status_check")
-    return oracle_status()
 
 
 @app.get("/api/session/{session_id}")
 async def restore_session(session_id: str):
-    """Restore a previous session from Oracle ADB."""
+    """Restore a previous session from the database."""
     saved = load_session(session_id)
     if not saved:
         return {"found": False, "session_id": session_id}
@@ -413,6 +395,21 @@ async def run_extraction(req: ExtractionRequest):
         cd["gst_data"]["gstin"] = _soft_get(extracted, "gstin")
         cd["gst_data"]["taxable_turnover"] = _soft_get(extracted, "taxable_turnover")
 
+    elif req.doc_type == "bank_statement":
+        try:
+            from pillar2_research.bank_statement_agent import analyze_bank_statement
+            bank_analysis = analyze_bank_statement(
+                req.full_text, cd.get("company_name", "")
+            )
+            if "bank_analyses" not in session_state:
+                session_state["bank_analyses"] = []
+            session_state["bank_analyses"].append({
+                "filename": req.filename,
+                "analysis": bank_analysis,
+            })
+        except Exception:
+            pass
+
     # Ensure classification is recorded if not already
     found = False
     for d in session_state["doc_classifications"]:
@@ -422,7 +419,6 @@ async def run_extraction(req: ExtractionRequest):
     if not found:
         session_state["doc_classifications"].append({"filename": req.filename, "type": req.doc_type})
 
-    # Index document in Oracle ADB
     insert_document(
         _DEFAULT_SESSION_ID, req.filename, req.doc_type,
         extracted, extracted.get("confidence_score", 0)

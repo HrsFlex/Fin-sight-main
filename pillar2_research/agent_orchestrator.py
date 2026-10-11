@@ -14,23 +14,27 @@ from pillar2_research.mca_agent     import lookup_mca_data
 from pillar2_research.ecourts_agent import lookup_litigation
 from pillar2_research.sector_agent  import analyze_sector
 from pillar2_research.financial_search_agent import fetch_financial_metrics
+from pillar2_research.promoter_agent import research_promoters
+from pillar2_research.rbi_risk_agent import check_rbi_risk
 
 
 # ─── State Schema ────────────────────────────────────────────────
 
 class ResearchState(TypedDict):
-    company_name:      str
-    cin:               str
-    industry:          str
-    promoter_names:    list[str]
-    qualitative_notes: list[str]
-    news_results:      dict
-    mca_results:       dict
+    company_name:       str
+    cin:                str
+    industry:           str
+    promoter_names:     list[str]
+    qualitative_notes:  list[str]
+    news_results:       dict
+    mca_results:        dict
     litigation_results: dict
-    sector_results:    dict
-    financial_results: dict
-    overall_research:  dict
-    errors:            Annotated[list[str], operator.add]  # merges error lists
+    sector_results:     dict
+    financial_results:  dict
+    promoter_results:   dict
+    rbi_check_results:  dict
+    overall_research:   dict
+    errors:             Annotated[list[str], operator.add]
 
 
 # ─── Agent Node Functions ─────────────────────────────────────────
@@ -76,18 +80,40 @@ def _node_financials(state: ResearchState) -> dict:
         return {"financial_results": {}, "errors": [f"financial_agent: {e}"]}
 
 
+def _node_promoter(state: ResearchState) -> dict:
+    try:
+        return {"promoter_results": research_promoters(
+            state["company_name"], state.get("promoter_names", []), state.get("cin", "")
+        )}
+    except Exception as e:
+        return {"promoter_results": {}, "errors": [f"promoter_agent: {e}"]}
+
+
+def _node_rbi_check(state: ResearchState) -> dict:
+    try:
+        return {"rbi_check_results": check_rbi_risk(
+            state["company_name"], state.get("promoter_names", []), state.get("cin", "")
+        )}
+    except Exception as e:
+        return {"rbi_check_results": {}, "errors": [f"rbi_risk_agent: {e}"]}
+
+
 def _node_supervisor(state: ResearchState) -> dict:
     """Aggregate all agent results into a unified research report."""
-    news_risk      = state.get("news_results",      {}).get("risk_score", 50)
-    mca_risk       = state.get("mca_results",       {}).get("risk_score", 50)
-    lit_risk       = state.get("litigation_results",{}).get("risk_score", 50)
-    sector_risk    = state.get("sector_results",    {}).get("risk_score", 50)
+    news_risk     = state.get("news_results",      {}).get("risk_score", 50)
+    mca_risk      = state.get("mca_results",       {}).get("risk_score", 50)
+    lit_risk      = state.get("litigation_results",{}).get("risk_score", 50)
+    sector_risk   = state.get("sector_results",    {}).get("risk_score", 50)
+    promoter_risk = state.get("promoter_results",  {}).get("risk_score", 30)
+    rbi_risk      = state.get("rbi_check_results", {}).get("risk_score", 20)
 
     composite = (
-        news_risk   * 0.25 +
-        mca_risk    * 0.25 +
-        lit_risk    * 0.30 +
-        sector_risk * 0.20
+        news_risk     * 0.20 +
+        mca_risk      * 0.20 +
+        lit_risk      * 0.20 +
+        sector_risk   * 0.15 +
+        promoter_risk * 0.15 +
+        rbi_risk      * 0.10
     )
 
     def risk_level(s: float) -> str:
@@ -95,11 +121,13 @@ def _node_supervisor(state: ResearchState) -> dict:
 
     provenance = []
     for key, label in [
-        ("news_results",       "News & Sentiment"),
-        ("mca_results",        "MCA21 Filings"),
-        ("litigation_results", "Litigation / NJDG"),
-        ("sector_results",     "Sector Analysis"),
-        ("financial_results",  "Financial Search"),
+        ("news_results",      "News & Sentiment"),
+        ("mca_results",       "MCA21 Filings"),
+        ("litigation_results","Litigation / NJDG"),
+        ("sector_results",    "Sector Analysis"),
+        ("financial_results", "Financial Search"),
+        ("promoter_results",  "Promoter Background"),
+        ("rbi_check_results", "RBI / Defaulter Check"),
     ]:
         r = state.get(key, {})
         provenance.append({
@@ -111,18 +139,20 @@ def _node_supervisor(state: ResearchState) -> dict:
 
     return {
         "overall_research": {
-            "company_name":           state["company_name"],
-            "composite_risk_score":   round(composite, 1),
-            "risk_level":             risk_level(composite),
-            "news":                   state.get("news_results", {}),
-            "mca":                    state.get("mca_results", {}),
-            "litigation":             state.get("litigation_results", {}),
-            "sector":                 state.get("sector_results", {}),
-            "financials":             state.get("financial_results", {}),
-            "qualitative_notes":      state.get("qualitative_notes", []),
-            "provenance":             provenance,
-            "errors":                 state.get("errors", []),
-            "summary":                _build_summary(state, composite, risk_level(composite)),
+            "company_name":         state["company_name"],
+            "composite_risk_score": round(composite, 1),
+            "risk_level":           risk_level(composite),
+            "news":                 state.get("news_results", {}),
+            "mca":                  state.get("mca_results", {}),
+            "litigation":           state.get("litigation_results", {}),
+            "sector":               state.get("sector_results", {}),
+            "financials":           state.get("financial_results", {}),
+            "promoter_check":       state.get("promoter_results", {}),
+            "rbi_check":            state.get("rbi_check_results", {}),
+            "qualitative_notes":    state.get("qualitative_notes", []),
+            "provenance":           provenance,
+            "errors":               state.get("errors", []),
+            "summary":              _build_summary(state, composite, risk_level(composite)),
         }
     }
 
@@ -157,26 +187,32 @@ def _build_graph():
         builder = StateGraph(ResearchState)
 
         # Register all nodes
-        builder.add_node("news_agent",    _node_news)
-        builder.add_node("mca_agent",     _node_mca)
-        builder.add_node("ecourts_agent", _node_ecourts)
-        builder.add_node("sector_agent",  _node_sector)
+        builder.add_node("news_agent",      _node_news)
+        builder.add_node("mca_agent",       _node_mca)
+        builder.add_node("ecourts_agent",   _node_ecourts)
+        builder.add_node("sector_agent",    _node_sector)
         builder.add_node("financial_agent", _node_financials)
-        builder.add_node("supervisor",    _node_supervisor)
+        builder.add_node("promoter_agent",  _node_promoter)
+        builder.add_node("rbi_check_agent", _node_rbi_check)
+        builder.add_node("supervisor",      _node_supervisor)
 
-        # Fan-out from START → all 4 agents (parallel)
-        builder.add_edge(START,    "news_agent")
-        builder.add_edge(START,    "mca_agent")
-        builder.add_edge(START,    "ecourts_agent")
-        builder.add_edge(START,    "sector_agent")
-        builder.add_edge(START,    "financial_agent")
+        # Fan-out from START → all 7 agents (parallel)
+        builder.add_edge(START, "news_agent")
+        builder.add_edge(START, "mca_agent")
+        builder.add_edge(START, "ecourts_agent")
+        builder.add_edge(START, "sector_agent")
+        builder.add_edge(START, "financial_agent")
+        builder.add_edge(START, "promoter_agent")
+        builder.add_edge(START, "rbi_check_agent")
 
         # Fan-in: all agents → supervisor
-        builder.add_edge("news_agent",    "supervisor")
-        builder.add_edge("mca_agent",     "supervisor")
-        builder.add_edge("ecourts_agent", "supervisor")
-        builder.add_edge("sector_agent",  "supervisor")
+        builder.add_edge("news_agent",      "supervisor")
+        builder.add_edge("mca_agent",       "supervisor")
+        builder.add_edge("ecourts_agent",   "supervisor")
+        builder.add_edge("sector_agent",    "supervisor")
         builder.add_edge("financial_agent", "supervisor")
+        builder.add_edge("promoter_agent",  "supervisor")
+        builder.add_edge("rbi_check_agent", "supervisor")
 
         # Supervisor → END
         builder.add_edge("supervisor", END)
@@ -226,18 +262,20 @@ def run_research_pipeline(
     qualitative_notes = qualitative_notes or []
 
     initial_state: ResearchState = {
-        "company_name":       company_name,
-        "cin":                cin,
-        "industry":           industry,
-        "promoter_names":     promoter_names,
-        "qualitative_notes":  qualitative_notes,
-        "news_results":       {},
-        "mca_results":        {},
-        "litigation_results": {},
-        "sector_results":     {},
-        "financial_results":  {},
-        "overall_research":   {},
-        "errors":             [],
+        "company_name":      company_name,
+        "cin":               cin,
+        "industry":          industry,
+        "promoter_names":    promoter_names,
+        "qualitative_notes": qualitative_notes,
+        "news_results":      {},
+        "mca_results":       {},
+        "litigation_results":{},
+        "sector_results":    {},
+        "financial_results": {},
+        "promoter_results":  {},
+        "rbi_check_results": {},
+        "overall_research":  {},
+        "errors":            [],
     }
 
     graph = _get_graph()
@@ -245,7 +283,7 @@ def run_research_pipeline(
     if graph is not None:
         # ── LangGraph parallel execution ──
         if progress_callback:
-            progress_callback("langgraph", "Running 4 agents in parallel via LangGraph...")
+            progress_callback("langgraph", "Running 7 agents in parallel via LangGraph...")
         try:
             final_state = graph.invoke(initial_state)
             if progress_callback:
@@ -258,11 +296,13 @@ def run_research_pipeline(
 
     # ── Sequential fallback ──
     agents = [
-        ("news_agent",    lambda s: {**s, **_node_news(s)}),
-        ("mca_agent",     lambda s: {**s, **_node_mca(s)}),
-        ("ecourts_agent", lambda s: {**s, **_node_ecourts(s)}),
-        ("sector_agent",  lambda s: {**s, **_node_sector(s)}),
+        ("news_agent",      lambda s: {**s, **_node_news(s)}),
+        ("mca_agent",       lambda s: {**s, **_node_mca(s)}),
+        ("ecourts_agent",   lambda s: {**s, **_node_ecourts(s)}),
+        ("sector_agent",    lambda s: {**s, **_node_sector(s)}),
         ("financial_agent", lambda s: {**s, **_node_financials(s)}),
+        ("promoter_agent",  lambda s: {**s, **_node_promoter(s)}),
+        ("rbi_check_agent", lambda s: {**s, **_node_rbi_check(s)}),
     ]
     state = initial_state
     for name, fn in agents:
